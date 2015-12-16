@@ -20,22 +20,12 @@ protected:
       // You can do set-up work for each test here.
       memset(&default_cbs, 0, sizeof(default_cbs));
       default_cbs.log_cb = test_log_cb;
-      struct sukat_event_cbs event_cbs =
-        {
-          .log_cb = test_log_cb
-        };
-
       memset(&default_params, 0, sizeof(default_params));
-
-      event_ctx = sukat_event_create(NULL, &event_cbs);
-      EXPECT_NE(nullptr, event_ctx);
-      default_params.event_ctx = event_ctx;
 
   }
 
   virtual ~sukat_sock_test() {
       // You can do clean-up work that doesn't throw exceptions here.
-      sukat_event_destroy(event_ctx);
   }
 
   // If the constructor and destructor are not enough for setting up and
@@ -69,8 +59,8 @@ protected:
           random_seeded = true;
         }
 
-      params->id.port_type = 63 + ((uint32_t)rand() % UINT32_MAX);
-      params->specific.port_instance = ((uint32_t)rand() % UINT32_MAX);
+      params->ptipc.port_type = 63 + ((uint32_t)rand() % UINT32_MAX);
+      params->ptipc.port_instance = ((uint32_t)rand() % UINT32_MAX);
     }
 
   bool wait_for_tipc_server(sukat_sock_ctx_t *ctx, uint32_t name_type,
@@ -126,7 +116,6 @@ protected:
   // Objects declared here can be used by all tests
   struct sukat_sock_cbs default_cbs;
   struct sukat_sock_params default_params;
-  sukat_event_ctx_t *event_ctx;
 };
 
 struct test_ctx
@@ -149,17 +138,17 @@ TEST_F(sukat_sock_test, sukat_sock_test_tipc)
   get_random_port(&default_params);
 
   ctx = sukat_sock_create(&default_params, &default_cbs);
-  EXPECT_NE(nullptr, ctx);
+  ASSERT_NE(nullptr, ctx);
 
   default_params.server = false;
-  bret = wait_for_tipc_server(ctx, default_params.id.port_type,
-                              default_params.specific.port_instance, 1000);
+  bret = wait_for_tipc_server(ctx, default_params.ptipc.port_type,
+                              default_params.ptipc.port_instance, 1000);
   EXPECT_EQ(true, bret);
 
   client_ctx = sukat_sock_create(&default_params, &default_cbs);
-  EXPECT_NE(nullptr, client_ctx);
+  ASSERT_NE(nullptr, client_ctx);
 
-  err = sukat_event_read(event_ctx, 0);
+  err = sukat_sock_read(ctx, sukat_sock_get_epoll_fd(ctx), 0, 0);
   EXPECT_NE(-1, err);
 
   sukat_sock_destroy(ctx);

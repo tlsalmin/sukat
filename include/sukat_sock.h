@@ -24,6 +24,33 @@
 #include "sukat_event.h"
 
 /*!
+ * Parameters for type AF_INET.
+ */
+struct sukat_sock_params_inet
+{
+  const char *ip;
+  const char *port;
+};
+
+/*!
+ * Parameters for AF_UNIX
+ */
+struct sukat_sock_params_unix
+{
+  const char *name;
+  bool is_abstract;
+};
+
+/*!
+ * Parameters for AF_TIPC
+ */
+struct sukat_sock_params_tipc
+{
+  uint32_t port_type;
+  uint32_t port_instance;
+};
+
+/*!
  * Parameters for \ref sukat_sock_create
  */
 struct sukat_sock_params
@@ -34,20 +61,14 @@ struct sukat_sock_params
   int type; //!< SOCK_STREAM, SOCK_DGRAM, SOCK_SEQPACKET or SOCK_RDM.
   union
     {
-      const char *ip; //!< AF_UNSPEC: The IP to connect/bind to.
-      const char *name; //!< AF_UNIX: Path or abstract name.
-      uint32_t port_type; //!< AF_TIPC: port type.
-    } id;
-  union
-    {
-      const char *port; //!< Port for AF_UNSPEC.
-      bool abstract; //!< If true on AF_UNIx, use abstract domain sockets.
-      uint32_t port_instance; //!< Port instance for AF_TIPC.
-    } specific;
-  sukat_event_ctx_t *event_ctx; /*! If set, the sukat_event_ctx to use for all
-                                    file descriptors created from this
-                                    sukat_sock_ctx.  If NULL, the sukat API will
-                                    create its own sukat_event_ctx */
+      struct sukat_sock_params_inet pinet;
+      struct sukat_sock_params_unix punix;
+      struct sukat_sock_params_tipc ptipc;
+    };
+  int master_epoll_fd; /*!< If ::master_epoll_fd_set is true, the sukat_sock
+                            API will add its own epoll fd to this master
+                            epoll fd. */
+  bool master_epoll_fd_set; //!< If true, use master_epoll_fd
   size_t listen; //!< If non-zero, use for listen parameter (man 2 listen).
 };
 
@@ -101,6 +122,18 @@ typedef void (*sukat_sock_msg_cb)(void *ctx, int id, uint8_t buf,
                                   size_t buf_len);
 
 /*!
+ * Callback invoked when an error is noticed in a connection. If id == -1,
+ * then the error was noticed in the main context (e.g. reading the main fd
+ * failed).
+ *
+ * @param ctx   Caller context. If a custom ctx was set to \p id, then that
+ * is returned.
+ * @param id    id for which connection failed. -1 for main ctx failure.
+ * @param errval error number describing problem
+ */
+typedef void (*sukat_sock_error_cb)(void *ctx, int id, int errval);
+
+/*!
  * Different callbacks invoked by the library, initializable by the caller
  * in sukat_sock_create.
  */
@@ -110,6 +143,7 @@ struct sukat_sock_cbs
   sukat_sock_new_conn_cb conn_cb;
   sukat_sock_msg_len_cb msg_len_cb;
   sukat_sock_msg_cb msg_cb;
+  sukat_sock_error_cb error_cb;
 };
 
 typedef struct sukat_sock_ctx sukat_sock_ctx_t;
@@ -126,6 +160,11 @@ typedef struct sukat_sock_ctx sukat_sock_ctx_t;
  */
 sukat_sock_ctx_t *sukat_sock_create(struct sukat_sock_params *params,
                                     struct sukat_sock_cbs *cbs);
+
+int sukat_sock_read(sukat_sock_ctx_t *ctx, int epoll_fd,
+                    uint32_t events, int timeout);
+
+int sukat_sock_get_epoll_fd(sukat_sock_ctx_t *ctx);
 
 /*!
  * Destroyes all sockets and data associated with \p ctx
