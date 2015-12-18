@@ -119,7 +119,7 @@ typedef int (*sukat_sock_msg_len_cb)(void *ctx, uint8_t *buf, size_t buf_len);
  * @param buf           Buffer containing message.
  * @param buf_len       Length of message.
  */
-typedef void (*sukat_sock_msg_cb)(void *ctx, int id, uint8_t buf,
+typedef void (*sukat_sock_msg_cb)(void *ctx, int id, uint8_t *buf,
                                   size_t buf_len);
 
 /*!

@@ -9,28 +9,28 @@ extern "C"{
 #include "sukat_sock.c"
 #include "sukat_event.h"
 #include <stdlib.h>
+#include <sys/un.h>
 }
 
-class sukat_sock_test : public ::testing::Test
+class sukat_sock_test_tipc : public ::testing::Test
 {
 protected:
   // You can remove any or all of the following functions if its body is empty.
 
-  sukat_sock_test() {
+  sukat_sock_test_tipc() {
       // You can do set-up work for each test here.
-      memset(&default_cbs, 0, sizeof(default_cbs));
-      default_cbs.log_cb = test_log_cb;
-      memset(&default_params, 0, sizeof(default_params));
-
   }
 
-  virtual ~sukat_sock_test() {
+  virtual ~sukat_sock_test_tipc() {
       // You can do clean-up work that doesn't throw exceptions here.
   }
 
   // If the constructor and destructor are not enough for setting up and
   // cleaning up each test, you can define the following methods:
   virtual void SetUp() {
+      memset(&default_cbs, 0, sizeof(default_cbs));
+      default_cbs.log_cb = test_log_cb;
+      memset(&default_params, 0, sizeof(default_params));
       // Code here will be called immediately after the constructor (right
       // before each test).
   }
@@ -67,9 +67,9 @@ protected:
   bool wait_for_tipc_server(sukat_sock_ctx_t *ctx, uint32_t name_type,
                             uint32_t name_instance, int wait)
     {
-      struct sockaddr_tipc topsrv;
-      struct tipc_subscr subscr;
-      struct tipc_event event;
+      struct sockaddr_tipc topsrv = { };
+      struct tipc_subscr subscr= { };
+      struct tipc_event event = { };
 
       int sd = socket(AF_TIPC, SOCK_SEQPACKET, 0);
 
@@ -119,12 +119,14 @@ protected:
   struct sukat_sock_params default_params;
 };
 
+
+
 struct test_ctx
 {
   int yeah;
 };
 
-TEST_F(sukat_sock_test, sukat_sock_test_tipc)
+TEST_F(sukat_sock_test_tipc, sukat_sock_test_tipc)
 {
   sukat_sock_ctx_t *ctx, *client_ctx;
   struct test_ctx tctx = { };
@@ -152,6 +154,167 @@ TEST_F(sukat_sock_test, sukat_sock_test_tipc)
   err = sukat_sock_read(ctx, sukat_sock_get_epoll_fd(ctx), 0, 0);
   EXPECT_NE(-1, err);
 
-  sukat_sock_destroy(ctx);
   sukat_sock_destroy(client_ctx);
+  err = sukat_sock_read(ctx, sukat_sock_get_epoll_fd(ctx), 0, 0);
+  EXPECT_NE(-1, err);
+
+  sukat_sock_destroy(ctx);
+}
+
+class sukat_sock_test_sun : public ::testing::Test
+{
+protected:
+  // You can remove any or all of the following functions if its body is empty.
+
+  sukat_sock_test_sun() {
+      // You can do set-up work for each test here.
+  }
+
+  virtual ~sukat_sock_test_sun() {
+      // You can do clean-up work that doesn't throw exceptions here.
+  }
+
+  // If the constructor and destructor are not enough for setting up and
+  // cleaning up each test, you can define the following methods:
+  virtual void SetUp() {
+      memset(&default_cbs, 0, sizeof(default_cbs));
+      memset(&default_params, 0, sizeof(default_params));
+
+      default_cbs.log_cb = test_log_cb;
+
+      get_random_socket();
+      default_params.punix.name = sun_template;
+      default_params.domain = AF_UNIX;
+      default_params.punix.is_abstract = true;
+  }
+
+  virtual void TearDown() {
+      default_params.punix.name = NULL;
+      // Code here will be called immediately after each test (right
+      // before the destructor).
+  }
+
+  void get_random_socket()
+    {
+      int fd;
+      snprintf(sun_template, sizeof(sun_template),
+               "/tmp/sukat_sock_sun_test_XXXXXX");
+
+      fd = mkstemp(sun_template);
+      ASSERT_NE(-1, fd);
+      close(fd);
+      unlink(sun_template);
+    }
+  // Objects declared here can be used by all tests
+  struct sukat_sock_cbs default_cbs;
+  struct sukat_sock_params default_params;
+  char sun_template[sizeof(((struct sockaddr_un *)0)->sun_path) - 2];
+};
+
+struct sun_test_ctx
+{
+  bool connected_should;
+  bool connected_visited;
+  bool connected_should_disconnect;
+  bool id_match;
+  int id;
+  void *new_ctx;
+  size_t n_connects;
+  size_t n_disconnects;
+};
+
+struct test_client
+{
+  int id;
+};
+
+void *new_conn_cb(void *ctx, int id, struct sockaddr_storage *sockaddr,
+                  size_t sock_len, bool disconnect)
+{
+  struct sun_test_ctx *tctx = (struct sun_test_ctx *)ctx;
+
+  EXPECT_EQ(true, tctx->connected_should);
+  if (disconnect)
+    {
+      EXPECT_EQ(true, tctx->connected_should_disconnect);
+      tctx->n_disconnects++;
+    }
+  else
+    {
+      tctx->n_connects++;
+    }
+  if (tctx->id_match)
+    {
+      EXPECT_EQ(tctx->id, id);
+    }
+  (void)sockaddr;
+  (void)sock_len;
+  tctx->connected_visited = true;
+  return tctx->new_ctx;
+}
+
+TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_connect)
+{
+  sukat_sock_ctx_t *ctx, *client_ctx;
+  struct sun_test_ctx tctx = { };
+  int err;
+
+  default_params.type = SOCK_STREAM;
+  default_params.caller_ctx = &tctx;
+  default_params.server = true;
+  default_cbs.conn_cb = new_conn_cb;
+
+  ctx = sukat_sock_create(&default_params, &default_cbs);
+  ASSERT_TRUE(ctx != NULL);
+
+  default_params.server = false;
+  client_ctx = sukat_sock_create(&default_params, &default_cbs);
+  ASSERT_TRUE(ctx != NULL);
+
+  tctx.connected_should = true;
+  err = sukat_sock_read(ctx, sukat_sock_get_epoll_fd(ctx), 0, 0);
+  EXPECT_EQ(0, err);
+  EXPECT_EQ(true, tctx.connected_visited);
+  EXPECT_EQ(2, ctx->n_connections);
+  tctx.connected_should = tctx.connected_visited = false;
+
+  sukat_sock_destroy(client_ctx);
+
+  tctx.connected_should = tctx.connected_should_disconnect = true;
+  err = sukat_sock_read(ctx, sukat_sock_get_epoll_fd(ctx), 0, 0);
+  EXPECT_EQ(0, err);
+  EXPECT_EQ(true, tctx.connected_visited);
+  tctx.connected_should = tctx.connected_visited =
+    tctx.connected_should_disconnect = false;
+
+    {
+      size_t i;
+      const size_t n_clients = SOMAXCONN;
+      sukat_sock_ctx_t *clients[n_clients];
+      tctx.n_connects = tctx.n_disconnects = 0;
+
+      for (i = 0; i < n_clients; i++)
+        {
+          clients[i] = sukat_sock_create(&default_params, &default_cbs);
+          EXPECT_TRUE(clients[i] != NULL);
+        }
+      tctx.connected_should = true;
+      err = sukat_sock_read(ctx, sukat_sock_get_epoll_fd(ctx), 0, 0);
+      EXPECT_NE(-1, err);
+      EXPECT_EQ(true, tctx.connected_visited);
+      EXPECT_EQ(n_clients + 1, ctx->n_connections);
+      EXPECT_EQ(n_clients, tctx.n_connects);
+      tctx.connected_should = tctx.connected_visited = false;
+
+      for (i = 0; i < n_clients; i++)
+        {
+          sukat_sock_destroy(clients[i]);
+        }
+      tctx.connected_should = tctx.connected_should_disconnect = true;
+      err = sukat_sock_read(ctx, sukat_sock_get_epoll_fd(ctx), 0, 0);
+      EXPECT_NE(-1, err);
+      EXPECT_EQ(true, tctx.connected_visited);
+      EXPECT_EQ(n_clients, tctx.n_disconnects);
+    }
+  sukat_sock_destroy(ctx);
 }
