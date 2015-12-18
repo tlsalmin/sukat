@@ -61,6 +61,7 @@ protected:
 
       params->ptipc.port_type = 63 + ((uint32_t)rand() % UINT32_MAX);
       params->ptipc.port_instance = ((uint32_t)rand() % UINT32_MAX);
+      params->ptipc.scope = TIPC_NODE_SCOPE;
     }
 
   bool wait_for_tipc_server(sukat_sock_ctx_t *ctx, uint32_t name_type,

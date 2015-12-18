@@ -48,6 +48,7 @@ struct sukat_sock_params_tipc
 {
   uint32_t port_type;
   uint32_t port_instance;
+  signed char scope;
 };
 
 /*!

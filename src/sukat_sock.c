@@ -221,13 +221,12 @@ static int socket_create(sukat_sock_ctx_t *ctx,
   else if (params->domain == AF_TIPC)
     {
       sockaddr.tipc.family = AF_TIPC;
-      //TODO: Add these things as parameter.
       if (params->server)
         {
           sockaddr.tipc.addrtype = TIPC_ADDR_NAMESEQ;
           sockaddr.tipc.addr.nameseq.lower = params->ptipc.port_instance;
           sockaddr.tipc.addr.nameseq.upper = params->ptipc.port_instance;
-          sockaddr.tipc.scope = TIPC_ZONE_SCOPE;
+          sockaddr.tipc.scope = params->ptipc.scope;
           sockaddr.tipc.addr.nameseq.type = params->ptipc.port_type;
         }
       else
