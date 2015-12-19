@@ -242,30 +242,24 @@ static bool set_flags(sukat_sock_ctx_t *ctx, int fd)
   int flags;
 
   flags = fcntl(fd, F_GETFL, 0);
-  if (flags < 0)
+  if (flags >= 0)
     {
-      ERR(ctx, "Failed to get flags for fd %d: %s", fd, strerror(errno));
-      return false;
+      flags |= O_NONBLOCK;
+      if (fcntl(fd, F_SETFL, flags) == 0)
+        {
+          flags = fcntl(fd, F_GETFD, 0);
+          if (flags >= 0)
+            {
+              flags |= FD_CLOEXEC;
+              if (fcntl(fd, F_SETFD, flags) == 0)
+                {
+                  return true;
+                }
+            }
+        }
     }
-  flags |= O_NONBLOCK;
-  if (fcntl(fd, F_SETFL, flags) != 0)
-    {
-      ERR(ctx, "Failed to set non-blocking to fd %d: %s", fd, strerror(errno));
-      return false;
-    }
-  flags = fcntl(fd, F_GETFD, 0);
-  if (flags < 0)
-    {
-      ERR(ctx, "Failed to getfd for fd %d: %s", fd, strerror(errno));
-      return false;
-    }
-  flags |= FD_CLOEXEC;
-  if (fcntl(fd, F_SETFD, flags) != 0)
-    {
-      ERR(ctx, "Failed to set cloexec on fd %d: %s", fd, strerror(errno));
-      return false;
-    }
-  return true;
+  ERR(ctx, "Failed to set flags to fd %d: %s", fd, strerror(errno));
+  return false;
 }
 
 static void socket_fill_tipc(struct sukat_sock_params *params,
@@ -331,7 +325,7 @@ static int socket_create(sukat_sock_ctx_t *ctx,
   LOG(ctx, "%s: Creating", socket_log(ctx, params, socket_buf,
                                       sizeof(socket_buf)));
   fd = socket(params->domain, type, 0);
-  if (fd <= 0)
+  if (fd < 0)
     {
       ERR(ctx, "Failed to create socket: %s", strerror(errno));
       goto fail;
@@ -349,7 +343,7 @@ static int socket_create(sukat_sock_ctx_t *ctx,
     }
   else
     {
-      ERR(ctx, "Not implemented");
+      ERR(ctx, "domain %d socket not implemented", params->domain);
       goto fail;
     }
   if (params->server)
@@ -404,15 +398,6 @@ fail:
       close(fd);
     }
   return -1;
-}
-
-void read_client_cb(void *cctx, int fd, uint32_t events)
-{
-  struct client_ctx *client = (struct client_ctx *)cctx;
-  sukat_sock_ctx_t *ctx = client->main_ctx;
-
-  DBG(ctx, "FD %d received events %u", fd, events);
-  //TODO:
 }
 
 static bool event_ctl(int epoll_fd, int fd, void *data, int op, uint32_t events)
@@ -479,38 +464,35 @@ static void server_accept_cb(sukat_sock_ctx_t *ctx)
 {
   struct sockaddr_storage saddr;
   socklen_t slen = sizeof(saddr);
-  struct client_ctx *client;
   int fd;
 
   fd = accept(ctx->fd, (struct sockaddr *)&saddr, &slen);
-  if (fd < 0)
+  if (fd >= 0)
     {
-      ERR(ctx, "Failed to accept: %s", strerror(errno));
-      return;
-    }
-  LOG(ctx, "New client with fd %d", fd);
-  client = (struct client_ctx *)calloc(1, sizeof(*client));
-  if (!client)
-    {
-      ERR(ctx, "No memory to accept new clients: %s", strerror(errno));
-      close(fd);
-      return;
-    }
-  client->fd = fd;
-  client->main_ctx = ctx;
+      struct client_ctx *client =
+        (struct client_ctx *)calloc(1, sizeof(*client));
 
-  if (event_add_to_ctx(ctx, fd, client, EPOLL_CTL_ADD, EPOLLIN) != true)
-    {
+      if (client)
+        {
+          client->fd = fd;
+          client->main_ctx = ctx;
+
+          if (event_add_to_ctx(ctx, fd, client, EPOLL_CTL_ADD, EPOLLIN) == true)
+            {
+              LOG(ctx, "New client with fd %d", fd);
+              if (ctx->cbs.conn_cb)
+                {
+                  client->client_caller_ctx =
+                    ctx->cbs.conn_cb(ctx->caller_ctx, fd, &saddr, slen, false);
+                }
+              ctx->n_connections++;
+              return;
+            }
+          free(client);
+        }
       close(fd);
-      free(client);
-      return;
     }
-  if (ctx->cbs.conn_cb)
-    {
-       client->client_caller_ctx =
-         ctx->cbs.conn_cb(ctx->caller_ctx, fd, &saddr, slen, false);
-    }
-  ctx->n_connections++;
+  ERR(ctx, "Failed to accept: %s", strerror(errno));
 }
 
 static bool client_continue_connect(sukat_sock_ctx_t *ctx)
@@ -546,7 +528,10 @@ static bool client_continue_connect(sukat_sock_ctx_t *ctx)
       else
         {
           ERR(ctx, "Connect continuing failed: %s", strerror(errno));
-          //TODO. Need a error callback.
+          if (ctx->cbs.error_cb)
+            {
+              ctx->cbs.error_cb(ctx->caller_ctx, 0, errno);
+            }
         }
       return false;
     }
@@ -752,7 +737,7 @@ static ret_t event_handle(sukat_sock_ctx_t *ctx, struct epoll_event *event)
   return ERR_OK;
 }
 
-/*TODO: Not sure if events can be other than EPOLLIN if the slave
+/* TODO: Not sure if events can be other than EPOLLIN if the slave
  * fds have other than EPOLLIN */
 int sukat_sock_read(sukat_sock_ctx_t *ctx, int epoll_fd,
                     __attribute__((unused))uint32_t events,

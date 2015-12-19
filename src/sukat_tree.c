@@ -17,6 +17,7 @@ struct sukat_tree_ctx
   sukat_tree_node_t *head;
   struct sukat_tree_params params;
   struct sukat_tree_cbs cbs;
+  bool destroyed;
 };
 
 struct sukat_tree_node_ctx
@@ -24,6 +25,7 @@ struct sukat_tree_node_ctx
   sukat_tree_node_t *parent;
   sukat_tree_node_t *left;
   sukat_tree_node_t *right;
+  bool removed;
   union
     {
       int height;
@@ -59,10 +61,9 @@ static void height_count(sukat_tree_node_t *node)
 #undef MAX
 }
 
-static void height_update_up(sukat_tree_node_t *node)
+static void height_update_up(sukat_tree_node_t *node,
+                             __attribute((unused))bool rebalance)
 {
-  height_count(node);
-  node = node->parent;
   while (node)
     {
       height_count(node);
@@ -70,7 +71,8 @@ static void height_update_up(sukat_tree_node_t *node)
     }
 }
 
-static void rotate_left(sukat_tree_ctx_t *tree, sukat_tree_node_t *node)
+static void rotate_left(sukat_tree_ctx_t *tree, sukat_tree_node_t *node,
+                        bool update_up, bool rebalance)
 {
   sukat_tree_node_t **parents_ptr, *right;
   assert(tree != NULL && node != NULL && node->right != NULL);
@@ -88,11 +90,15 @@ static void rotate_left(sukat_tree_ctx_t *tree, sukat_tree_node_t *node)
     }
   right->left = node;
 
-  /* Update heights. */
-  height_update_up(node);
+  if (update_up)
+    {
+      /* Update heights. */
+      height_update_up(node, rebalance);
+    }
 }
 
-static void rotate_right(sukat_tree_ctx_t *tree, sukat_tree_node_t *node)
+static void rotate_right(sukat_tree_ctx_t *tree, sukat_tree_node_t *node,
+                         bool update_up, bool rebalance)
 {
   sukat_tree_node_t **parents_ptr, *left;
   assert(tree != NULL && node != NULL && node->left != NULL);
@@ -110,8 +116,11 @@ static void rotate_right(sukat_tree_ctx_t *tree, sukat_tree_node_t *node)
     }
   left->right = node;
 
-  /* Update heights. */
-  height_update_up(node);
+  if (update_up)
+    {
+      /* Update heights. */
+      height_update_up(node, rebalance);
+    }
 }
 
 sukat_tree_ctx_t *sukat_tree_create(struct sukat_tree_params *params,
@@ -177,13 +186,136 @@ static sukat_tree_node_t *binary_insert(sukat_tree_ctx_t *ctx, void *data)
   *parents_ptr = (sukat_tree_node_t*)calloc(1, sizeof(*ctx->head));
   (*parents_ptr)->data = data;
   (*parents_ptr)->parent = parent;
-  while (parent)
-    {
-      height_count(parent);
-      parent = parent->parent;
-    }
 
   return *parents_ptr;
+}
+
+void *sukat_tree_node_data(sukat_tree_node_t *node)
+{
+  if (node)
+    {
+      return node->data;
+    }
+  return NULL;
+}
+
+static void node_free(sukat_tree_ctx_t *ctx, sukat_tree_node_t *node)
+{
+  if (ctx->cbs.destroy_cb && !node->removed)
+    {
+      ctx->cbs.destroy_cb(sukat_tree_node_data(node));
+    }
+  free(node);
+}
+
+static sukat_tree_node_t *binary_minimum(sukat_tree_node_t *node)
+{
+  sukat_tree_node_t *iter = node;
+
+  while (iter->left)
+    {
+      iter = iter->left;
+    }
+  return iter;
+}
+
+static sukat_tree_node_t *binary_successor(sukat_tree_node_t *node)
+{
+  if (node && node->right)
+    {
+      return binary_minimum(node->right);
+    }
+  return NULL;
+}
+
+static sukat_tree_node_t *binary_detach(sukat_tree_ctx_t *ctx,
+                                        sukat_tree_node_t *node)
+{
+  sukat_tree_node_t *ret = NULL;
+
+  if (ctx && node)
+    {
+      sukat_tree_node_t **parents_ptr = parent_ptr_get(ctx, node);
+
+      node->removed = true;
+
+      if (!node->left || !node->right)
+        {
+          sukat_tree_node_t *new_child = (node->left) ? node->left :
+            node->right;
+
+          if (new_child)
+            {
+              new_child->parent = node->parent;
+            }
+          *parents_ptr = new_child;
+          ret = node->parent;
+        }
+      else
+        {
+          sukat_tree_node_t *successor = binary_successor(node);
+          sukat_tree_node_t **successor_parents_ptr;
+
+          assert(successor != NULL);
+
+          ret = (successor->parent == node) ? successor : successor->parent;
+          successor_parents_ptr = parent_ptr_get(ctx, successor);
+          *parents_ptr = successor;
+          *successor_parents_ptr = successor->right;
+          if (successor->right)
+            {
+              successor->right->parent = successor->parent;
+            }
+          successor->parent = node->parent;
+          successor->right = node->right;
+          if (successor->right)
+            {
+              successor->right->parent = successor;
+            }
+          successor->left = node->left;
+          if (successor->left)
+            {
+              successor->left->parent = successor;
+            }
+        }
+    }
+  return ret;
+}
+
+void sukat_tree_remove(sukat_tree_ctx_t *ctx, sukat_tree_node_t *node)
+{
+  sukat_tree_node_t *update_from = binary_detach(ctx, node);
+
+  if (update_from && !ctx->destroyed)
+    {
+      height_update_up(update_from, true);
+    }
+  node_free(ctx, node);
+}
+
+static sukat_tree_node_t *binary_find(sukat_tree_ctx_t *ctx,
+                                      sukat_tree_node_t *node, void *key)
+{
+  if (node)
+    {
+      int cmp_val = ctx->cbs.cmp_cb(key, sukat_tree_node_data(node), true);
+
+      if (!cmp_val)
+        {
+          return node;
+        }
+      if (cmp_val < 0)
+        {
+          return binary_find(ctx, node->left, key);
+        }
+      return binary_find(ctx, node->right, key);
+    }
+  return NULL;
+}
+
+sukat_tree_node_t *sukat_tree_find(sukat_tree_ctx_t *ctx, void *key)
+{
+  return binary_find(ctx, ctx->head, key);
 }
 
 sukat_tree_node_t *sukat_tree_add(sukat_tree_ctx_t *ctx, void *data)
@@ -194,16 +326,49 @@ sukat_tree_node_t *sukat_tree_add(sukat_tree_ctx_t *ctx, void *data)
     {
       return NULL;
     }
+  height_update_up(node, true);
   // TODO: balance.
 
   return node;
 };
 
+static bool node_df_cb(sukat_tree_node_t *node, void *caller_data)
+{
+  sukat_tree_ctx_t *ctx = (sukat_tree_ctx_t *)caller_data;
+  binary_detach(ctx, node);
+  node_free(ctx, node);
+  return true;
+}
+
+static void depth_first_step(sukat_tree_ctx_t *ctx, sukat_tree_node_cb node_cb,
+                             void *caller_ctx, sukat_tree_node_t *node)
+{
+  if (node)
+    {
+      depth_first_step(ctx, node_cb, caller_ctx, node->left);
+      depth_first_step(ctx, node_cb, caller_ctx, node->right);
+      if (node_cb)
+        {
+          node_cb(node, caller_ctx);
+        }
+    }
+}
+
+void sukat_tree_depth_first(sukat_tree_ctx_t *ctx, sukat_tree_node_cb node_cb,
+                            void *caller_ctx)
+{
+  if (ctx)
+    {
+      depth_first_step(ctx, node_cb, caller_ctx, ctx->head);
+    }
+}
+
 void sukat_tree_destroy(sukat_tree_ctx_t *ctx)
 {
-  //TODO: Remove nodes.
+  DBG(ctx, "Destroying tree %p", ctx);
+  ctx->destroyed = true;
+  sukat_tree_depth_first(ctx, node_df_cb, ctx);
   free(ctx);
-  DBG(ctx, "Destroyed tree %p", ctx);
 }
 
 /*! }@ */

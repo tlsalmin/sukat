@@ -165,6 +165,14 @@ sukat_sock_ctx_t *sukat_sock_create(struct sukat_sock_params *params,
 int sukat_sock_read(sukat_sock_ctx_t *ctx, int epoll_fd,
                     uint32_t events, int timeout);
 
+/*!
+ * Fetches the slave epoll fd \p ctx is using.
+ *
+ * @param ctx Sukat API Context.
+ *
+ * @return >= 0 Sukat API slave epoll fd.
+ * @return -1   Error. errno set appropriately.
+ */
 int sukat_sock_get_epoll_fd(sukat_sock_ctx_t *ctx);
 
 /*!

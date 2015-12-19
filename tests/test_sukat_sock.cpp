@@ -1,5 +1,7 @@
 #include <iostream>
+#include <fstream>
 #include <random>
+#include <string>
 
 #include "gtest/gtest.h"
 #include "test_common.h"
@@ -62,6 +64,30 @@ protected:
       params->ptipc.port_type = 63 + ((uint32_t)rand() % UINT32_MAX);
       params->ptipc.port_instance = ((uint32_t)rand() % UINT32_MAX);
       params->ptipc.scope = TIPC_NODE_SCOPE;
+    }
+  bool check_tipc()
+    {
+      std::ifstream procfile("/proc/modules");
+      char buf[128];
+
+      if (procfile.is_open())
+        {
+          std::string line;
+
+          while (getline(procfile, line))
+            {
+              if (line.find("tipc") != std::string::npos)
+                {
+                  procfile.close();
+                  return true;
+                }
+            }
+          procfile.close();
+        }
+      snprintf(buf, sizeof(buf), "Failed to check for TIPC: %s",
+               strerror(errno));
+      default_cbs.log_cb(SUKAT_LOG_ERROR, buf);
+      return false;
     }
 
   bool wait_for_tipc_server(sukat_sock_ctx_t *ctx, uint32_t name_type,
@@ -140,6 +166,13 @@ TEST_F(sukat_sock_test_tipc, sukat_sock_test_tipc)
 
   get_random_port(&default_params);
 
+  if (check_tipc() == false)
+    {
+      default_cbs.log_cb(SUKAT_LOG,
+                         "Skipping TIPC socket. modprobe tipc to enable");
+      return;
+    }
+
   ctx = sukat_sock_create(&default_params, &default_cbs);
   ASSERT_NE(nullptr, ctx);
 
@@ -186,6 +219,7 @@ protected:
       default_params.punix.name = sun_template;
       default_params.domain = AF_UNIX;
       default_params.punix.is_abstract = true;
+      default_params.type = SOCK_STREAM;
   }
 
   virtual void TearDown() {
@@ -259,7 +293,6 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_connect)
   struct sun_test_ctx tctx = { };
   int err;
 
-  default_params.type = SOCK_STREAM;
   default_params.caller_ctx = &tctx;
   default_params.server = true;
   default_cbs.conn_cb = new_conn_cb;
@@ -316,5 +349,51 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_connect)
       EXPECT_EQ(true, tctx.connected_visited);
       EXPECT_EQ(n_clients, tctx.n_disconnects);
     }
+  sukat_sock_destroy(ctx);
+}
+
+struct read_ctx
+{
+  int *returns;
+  size_t return_size;
+  size_t return_iter;
+  bool len_cb_should_visit;
+  bool len_cb_visited;
+  bool check_buf_len;
+  size_t *buf_lens;
+  size_t buf_len_size;
+  size_t buf_len_iter;
+};
+
+int len_cb(void *ctx, __attribute__((unused))uint8_t *buf,
+           size_t buf_len)
+{
+  struct read_ctx *tctx = (struct read_ctx*)ctx;
+
+  EXPECT_TRUE(tctx != NULL);
+  if (tctx->check_buf_len)
+    {
+      EXPECT_LT(tctx->buf_len_size, tctx->buf_len_iter);
+      EXPECT_EQ(tctx->buf_lens[tctx->buf_len_iter++], buf_len);
+    }
+  EXPECT_LT(tctx->return_size, tctx->return_iter);
+  return tctx->returns[tctx->return_iter++];
+}
+
+TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_read)
+{
+  sukat_sock_ctx_t *ctx, *client_ctx;
+
+  default_cbs.msg_len_cb = len_cb;
+  default_params.server = true;
+
+  ctx = sukat_sock_create(&default_params, &default_cbs);
+  ASSERT_TRUE(ctx != NULL);
+
+  default_params.server = false;
+  client_ctx = sukat_sock_create(&default_params, &default_cbs);
+  ASSERT_TRUE(ctx != NULL);
+
+  sukat_sock_destroy(client_ctx);
   sukat_sock_destroy(ctx);
 }

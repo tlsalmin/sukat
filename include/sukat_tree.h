@@ -86,15 +86,22 @@ sukat_tree_ctx_t *sukat_tree_create(struct sukat_tree_params *params,
 sukat_tree_node_t *sukat_tree_add(sukat_tree_ctx_t *ctx, void *data);
 
 /*!
- * Removes a node from the tree.
+ * Returns the caller stored data in a node.
+ *
+ * @param node  Node ctx.
+ *
+ * @return != NULL Data stored by caller.
+ * @return == NULL Error.
+ */
+void *sukat_tree_node_data(sukat_tree_node_t *node);
+
+/*!
+ * @brief Removes a node from the tree.
  *
  * @param ctx   Tree context.
  * @param node  Node to remove.
- *
- * @return true         Success.
- * @return false        node not found.
  */
-bool sukat_tree_remove(sukat_tree_ctx_t *ctx, sukat_tree_node_t *node);
+void sukat_tree_remove(sukat_tree_ctx_t *ctx, sukat_tree_node_t *node);
 
 /*!
  * Finds an entry from the tree.
@@ -106,7 +113,30 @@ bool sukat_tree_remove(sukat_tree_ctx_t *ctx, sukat_tree_node_t *node);
  * @param != NULL       Element found.
  * @param NULL          Element not found.
  */
-void *sukat_tree_find(sukat_tree_ctx_t *ctx, void *key);
+sukat_tree_node_t *sukat_tree_find(sukat_tree_ctx_t *ctx, void *key);
+
+/*!
+ * Callback invoked on each node in searches.
+ *
+ * @param node Node under iteration.
+ * @param caller_data Callers context passed to the search function.
+ *
+ * @return true Keep iterating.
+ * @return false Stop iterating.
+ */
+typedef bool (*sukat_tree_node_cb)(sukat_tree_node_t *node,
+                                   void *caller_data);
+
+/*!
+ * @brief Go through the tree in a depth first manner invoking \p node_cb
+ * with \p caller_ctx on each node.
+ *
+ * @param ctx           Tree context.
+ * @param node_cb       Callback on invoke on each node.
+ * @param caller_ctx    Context to pass for each \p node_cb.h
+*/
+void sukat_tree_depth_first(sukat_tree_ctx_t *ctx, sukat_tree_node_cb node_cb,
+                            void *caller_ctx);
 
 /*!
  * Destroys the given tree, calling the destroy_cb on each node if it is set.
