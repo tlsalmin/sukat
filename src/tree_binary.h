@@ -2,8 +2,8 @@
  * @file binary_tree.h
  * @brief Binary tree function declarations.
  *
- * @defgroup sukat_tree
- * @ingroup sukat_api
+ * @defgroup tree_binary
+ * @ingroup sukat_drawer
  * @{
  */
 
@@ -11,25 +11,34 @@
 #define SUKAT_BINARY_TREE_H
 
 #include <stdbool.h>
-#include "sukat_tree.h"
+#include "sukat_drawer.h"
 
-struct sukat_tree_ctx
+typedef struct tree_ctx tree_ctx_t;
+typedef struct tree_node_ctx tree_node_t;
+
+/*!
+ * Main context for a tree.
+ */
+struct tree_ctx
 {
-  enum sukat_drawer_type type;
-  sukat_tree_node_t *head;
+  enum sukat_drawer_type type; //!< Type mandatory at each drawer type start.
+  tree_node_t *root; //!< Root of tree.
   struct sukat_drawer_params params;
   struct sukat_drawer_cbs cbs;
-  bool destroyed;
+  bool destroyed; //!< True if destroy has been called for the tree.
 };
 
-struct sukat_tree_node_ctx
+/*!
+ * Main context for each node
+ */
+struct tree_node_ctx
 {
-  enum sukat_drawer_type type;
-  sukat_tree_node_t *head;
-  sukat_tree_node_t *parent;
-  sukat_tree_node_t *left;
-  sukat_tree_node_t *right;
-  bool removed;
+  enum sukat_drawer_type type; //!< Type mandatory at each drawer type start.
+  tree_node_t *parent; //!< Parent node.
+  tree_node_t *left; //!< Left == smaller value node.
+  tree_node_t *right; //!< Right == larger value node.
+  bool removed; /*!< True if this has been explicitly removed. destroyed_cb
+                     wont be called */
   union
     {
       int height;
@@ -39,15 +48,15 @@ struct sukat_tree_node_ctx
 
 /*!
  * Gets the pointer pointing to the current \p node from its parent or
- * the tree head pointer if the node is the trees root.
+ * the tree root pointer if the node is the trees root.
  *
  * @param ctx   Tree context.
  * @param node  Node for which pointer is requests.
  *
  * @return != NULL      Parents pointer to \p node
  */
-sukat_tree_node_t **tree_binary_parents_ptr(sukat_tree_ctx_t *tree,
-                                            sukat_tree_node_t *node);
+tree_node_t **tree_binary_parents_ptr(tree_ctx_t *tree,
+                                            tree_node_t *node);
 
 /*!
  * @brief Inserts \p data into the binary tree, creating a new node.
@@ -58,7 +67,7 @@ sukat_tree_node_t **tree_binary_parents_ptr(sukat_tree_ctx_t *tree,
  * @return != NULL      Created nodes pointer.
  * @return == NULL      Failure.
  */
-sukat_tree_node_t *tree_binary_insert(sukat_tree_ctx_t *ctx, void *data);
+tree_node_t *tree_binary_insert(tree_ctx_t *ctx, void *data);
 
 /*!
  * @brief Finds the minimum in \p node
@@ -68,7 +77,7 @@ sukat_tree_node_t *tree_binary_insert(sukat_tree_ctx_t *ctx, void *data);
  * @return node Node containing the minimum value.
  * @return NULL \p was null.
  */
-sukat_tree_node_t *tree_binary_minimum(sukat_tree_node_t *node);
+tree_node_t *tree_binary_minimum(tree_node_t *node);
 
 /*!
  * @brief Returns the successor of \p node, which is the next biggest value.
@@ -78,7 +87,7 @@ sukat_tree_node_t *tree_binary_minimum(sukat_tree_node_t *node);
  * @return != NULL      Successor of \p node.
  * @return NULL         No successor for \p node.
  */
-sukat_tree_node_t *tree_binary_successor(sukat_tree_node_t *node);
+tree_node_t *tree_binary_successor(tree_node_t *node);
 
 /*!
  * @brief Detaches the \p node from \p ctx tree.
@@ -89,8 +98,8 @@ sukat_tree_node_t *tree_binary_successor(sukat_tree_node_t *node);
  * @return != NULL Lowest node affected by change.
  * @return == NULL No effects.
  */
-sukat_tree_node_t *tree_binary_detach(sukat_tree_ctx_t *ctx,
-                                      sukat_tree_node_t *node);
+tree_node_t *tree_binary_detach(tree_ctx_t *ctx,
+                                      tree_node_t *node);
 
 /*!
  * @brief Rotates the \p node left in the tree.
@@ -98,7 +107,7 @@ sukat_tree_node_t *tree_binary_detach(sukat_tree_ctx_t *ctx,
  * @param tree  Tree context.
  * @param node  Node to rotate
  */
-void tree_binary_rotate_left(sukat_tree_ctx_t *tree, sukat_tree_node_t *node);
+void tree_binary_rotate_left(tree_ctx_t *tree, tree_node_t *node);
 
 /*!
  * @brief Rotates the \p node right in the tree.
@@ -106,7 +115,7 @@ void tree_binary_rotate_left(sukat_tree_ctx_t *tree, sukat_tree_node_t *node);
  * @param tree  Tree context.
  * @param node  Node to rotate
  */
-void tree_binary_rotate_right(sukat_tree_ctx_t *tree, sukat_tree_node_t *node);
+void tree_binary_rotate_right(tree_ctx_t *tree, tree_node_t *node);
 
 /*!
  * @brief Finds the node with \p key. If \p node is given, the search is
@@ -119,8 +128,8 @@ void tree_binary_rotate_right(sukat_tree_ctx_t *tree, sukat_tree_node_t *node);
  * @return != NULL      Found node.
  * @return == NULL      No node with \p key found
  */
-sukat_tree_node_t *tree_binary_find(sukat_tree_ctx_t *ctx,
-                                    sukat_tree_node_t *node, void *key);
+tree_node_t *tree_binary_find(tree_ctx_t *ctx,
+                                    tree_node_t *node, void *key);
 
 /*!
  * @brief Performs a depth_first search of the tree calling \p node_cb with
@@ -130,14 +139,27 @@ sukat_tree_node_t *tree_binary_find(sukat_tree_ctx_t *ctx,
  * @param node_cb       Callback to invoke for each node.
  * @param caller_ctx    Context given to caller on each node
  */
-void tree_binary_depth_first(sukat_tree_ctx_t *ctx,
+void tree_binary_depth_first(tree_ctx_t *ctx,
                              sukat_drawer_node_cb node_cb, void *caller_ctx);
 
-void *binary_tree_node_data(sukat_tree_node_t *node);
+/*!
+ * @brief \ref sukat_drawer_node_data
+ */
+void *tree_binary_node_data(tree_node_t *node);
 
-void tree_binary_destroy(sukat_tree_ctx_t *ctx);
+/*!
+ * @brief \ref sukat_drawer_destroy
+ */
+void tree_binary_destroy(tree_ctx_t *ctx);
 
-void tree_binary_node_free(sukat_tree_ctx_t *ctx, sukat_tree_node_t *node);
+/*!
+ * Frees the given node. Calls destroy_cb if it is set and the node was not
+ * explicitly removed.
+ *
+ * @param ctx   Tree context.
+ * @param node  Node context.
+ */
+void tree_binary_node_free(tree_ctx_t *ctx, tree_node_t *node);
 
 #endif /* SUKAT_BINARY_TREE_H */
 

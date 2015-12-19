@@ -9,7 +9,7 @@
 #include <stdio.h>
 #include "sukat_log_internal.h"
 #include "sukat_drawer.h"
-#include "sukat_tree.h"
+#include "tree_avl.h"
 #include "tree_binary.h"
 
 sukat_drawer_t *sukat_drawer_create(struct sukat_drawer_params *params,
@@ -17,7 +17,7 @@ sukat_drawer_t *sukat_drawer_create(struct sukat_drawer_params *params,
 {
   if (params->type == SUKAT_DRAWER_TREE_AVL)
     {
-      return (sukat_drawer_t *)sukat_tree_create(params, cbs);
+      return (sukat_drawer_t *)tree_avl_create(params, cbs);
     }
   return NULL;
 }
@@ -31,7 +31,7 @@ sukat_drawer_node_t *sukat_drawer_add(sukat_drawer_t *ctx, void *data)
       switch (type)
         {
         case SUKAT_DRAWER_TREE_AVL:
-          return (sukat_drawer_node_t *)sukat_tree_add((sukat_tree_ctx_t *)ctx,
+          return (sukat_drawer_node_t *)tree_avl_add((tree_ctx_t *)ctx,
                                                        data);
           break;
         default:
@@ -50,8 +50,8 @@ void sukat_drawer_remove(sukat_drawer_t *ctx, sukat_drawer_node_t *node)
       switch (type)
         {
         case SUKAT_DRAWER_TREE_AVL:
-          sukat_tree_remove((sukat_tree_ctx_t *)ctx,
-                            (sukat_tree_node_t *)node);
+          tree_avl_remove((tree_ctx_t *)ctx,
+                            (tree_node_t *)node);
           break;
         default:
           break;
@@ -68,7 +68,7 @@ void *sukat_drawer_node_data(sukat_drawer_node_t *node)
       switch (type)
         {
         case SUKAT_DRAWER_TREE_AVL:
-          return binary_tree_node_data((sukat_tree_node_t *)node);
+          return tree_binary_node_data((tree_node_t *)node);
           break;
         default:
           break;
@@ -86,7 +86,7 @@ void sukat_drawer_destroy(sukat_drawer_t *ctx)
       switch (type)
         {
         case SUKAT_DRAWER_TREE_AVL:
-          tree_binary_destroy((sukat_tree_ctx_t *)ctx);
+          tree_binary_destroy((tree_ctx_t *)ctx);
         default:
         break;
         }
@@ -103,7 +103,7 @@ void sukat_drawer_iter(sukat_drawer_t *ctx, sukat_drawer_node_cb node_cb,
       switch (type)
         {
         case SUKAT_DRAWER_TREE_AVL:
-          tree_binary_depth_first((sukat_tree_ctx_t *)ctx, node_cb, caller_ctx);
+          tree_binary_depth_first((tree_ctx_t *)ctx, node_cb, caller_ctx);
         default:
         break;
         }

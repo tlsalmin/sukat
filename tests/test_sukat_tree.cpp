@@ -4,7 +4,7 @@
 extern "C"{
 #include "sukat_log_internal.c"
 #include "tree_binary.c"
-#include "sukat_tree.c"
+#include "tree_avl.c"
 }
 
 static int tree_test_cmp_cb(void *n1, void *n2,
@@ -24,14 +24,14 @@ protected:
   }
 
   virtual void SetUp() {
-      sukat_tree_node_t *node;
+      tree_node_t *node;
       size_t i = 0;
 
       memset(&default_params, 0, sizeof(default_params));
       memset(&default_cbs, 0, sizeof(default_cbs));
       default_cbs.log_cb = test_log_cb;
       default_cbs.cmp_cb = tree_test_cmp_cb;
-      ctx = sukat_tree_create(&default_params, &default_cbs);
+      ctx = tree_avl_create(&default_params, &default_cbs);
       EXPECT_NE(nullptr, ctx);
 
       for (i = 0; i < testvalues_len; i++)
@@ -58,20 +58,20 @@ protected:
 
   struct sukat_drawer_params default_params;
   struct sukat_drawer_cbs default_cbs;
-  sukat_tree_ctx_t *ctx;
+  tree_ctx_t *ctx;
   int testvalues[6] = {-1, 4, 5, 6, -3, 3};
   size_t testvalues_len = sizeof(testvalues) / sizeof(*testvalues);
 };
 
 TEST_F(sukat_tree_test, sukat_tree_test_init)
 {
-  sukat_tree_ctx_t *ctx_other;
+  tree_ctx_t *ctx_other;
   struct sukat_drawer_params params = { };
 
-  ctx_other = sukat_tree_create(NULL, NULL);
+  ctx_other = tree_avl_create(NULL, NULL);
   EXPECT_EQ(nullptr, ctx_other);
 
-  ctx_other = sukat_tree_create(&params, NULL);
+  ctx_other = tree_avl_create(&params, NULL);
   EXPECT_NE(nullptr, ctx_other);
 
   tree_binary_destroy(ctx_other);
@@ -79,24 +79,24 @@ TEST_F(sukat_tree_test, sukat_tree_test_init)
 
 TEST_F(sukat_tree_test, sukat_tree_test_rotates)
 {
-  sukat_tree_node_t *node;
+  tree_node_t *node;
 
-  EXPECT_EQ(*(int *)ctx->head->data, testvalues[0]);
-  EXPECT_EQ(*(int *)ctx->head->left->data, testvalues[4]);
-  EXPECT_EQ(*(int *)ctx->head->right->data, testvalues[1]);
-  EXPECT_EQ(*(int *)ctx->head->right->left->data, testvalues[5]);
-  EXPECT_EQ(*(int *)ctx->head->right->right->data, testvalues[2]);
-  EXPECT_EQ(*(int *)ctx->head->right->right->right->data, testvalues[3]);
+  EXPECT_EQ(*(int *)ctx->root->data, testvalues[0]);
+  EXPECT_EQ(*(int *)ctx->root->left->data, testvalues[4]);
+  EXPECT_EQ(*(int *)ctx->root->right->data, testvalues[1]);
+  EXPECT_EQ(*(int *)ctx->root->right->left->data, testvalues[5]);
+  EXPECT_EQ(*(int *)ctx->root->right->right->data, testvalues[2]);
+  EXPECT_EQ(*(int *)ctx->root->right->right->right->data, testvalues[3]);
 
   // Check heights.
-  EXPECT_EQ(3, ctx->head->meta.height);
-  EXPECT_EQ(0, ctx->head->left->meta.height);
-  EXPECT_EQ(2, ctx->head->right->meta.height);
-  EXPECT_EQ(0, ctx->head->right->left->meta.height);
-  EXPECT_EQ(1, ctx->head->right->right->meta.height);
-  EXPECT_EQ(0, ctx->head->right->right->right->meta.height);
+  EXPECT_EQ(3, ctx->root->meta.height);
+  EXPECT_EQ(0, ctx->root->left->meta.height);
+  EXPECT_EQ(2, ctx->root->right->meta.height);
+  EXPECT_EQ(0, ctx->root->right->left->meta.height);
+  EXPECT_EQ(1, ctx->root->right->right->meta.height);
+  EXPECT_EQ(0, ctx->root->right->right->right->meta.height);
 
-  node = ctx->head;
+  node = ctx->root;
   tree_binary_rotate_left(ctx, node);
   height_update_up(node, false);
 
@@ -107,22 +107,22 @@ TEST_F(sukat_tree_test, sukat_tree_test_rotates)
    *          / \   \
    *        -3   3   6
    */
-  EXPECT_EQ(testvalues[1], *(int *)ctx->head->data);
-  EXPECT_EQ(testvalues[0], *(int *)ctx->head->left->data);
-  EXPECT_EQ(testvalues[4], *(int *)ctx->head->left->left->data);
-  EXPECT_EQ(testvalues[5], *(int *)ctx->head->left->right->data);
-  EXPECT_EQ(testvalues[2], *(int *)ctx->head->right->data);
-  EXPECT_EQ(testvalues[3], *(int *)ctx->head->right->right->data);
+  EXPECT_EQ(testvalues[1], *(int *)ctx->root->data);
+  EXPECT_EQ(testvalues[0], *(int *)ctx->root->left->data);
+  EXPECT_EQ(testvalues[4], *(int *)ctx->root->left->left->data);
+  EXPECT_EQ(testvalues[5], *(int *)ctx->root->left->right->data);
+  EXPECT_EQ(testvalues[2], *(int *)ctx->root->right->data);
+  EXPECT_EQ(testvalues[3], *(int *)ctx->root->right->right->data);
 
   // Check heights.
-  EXPECT_EQ(2, ctx->head->meta.height);
-  EXPECT_EQ(1, ctx->head->left->meta.height);
-  EXPECT_EQ(0, ctx->head->left->left->meta.height);
-  EXPECT_EQ(0, ctx->head->left->right->meta.height);
-  EXPECT_EQ(1, ctx->head->right->meta.height);
-  EXPECT_EQ(0, ctx->head->right->right->meta.height);
+  EXPECT_EQ(2, ctx->root->meta.height);
+  EXPECT_EQ(1, ctx->root->left->meta.height);
+  EXPECT_EQ(0, ctx->root->left->left->meta.height);
+  EXPECT_EQ(0, ctx->root->left->right->meta.height);
+  EXPECT_EQ(1, ctx->root->right->meta.height);
+  EXPECT_EQ(0, ctx->root->right->right->meta.height);
 
-  node = ctx->head->right;
+  node = ctx->root->right;
   tree_binary_rotate_left(ctx, node);
   height_update_up(node, false);
 
@@ -134,15 +134,15 @@ TEST_F(sukat_tree_test, sukat_tree_test_rotates)
    *        -3   3 5
    */
 
-  EXPECT_EQ(testvalues[3], *(int *)ctx->head->right->data);
-  EXPECT_EQ(testvalues[2], *(int *)ctx->head->right->left->data);
+  EXPECT_EQ(testvalues[3], *(int *)ctx->root->right->data);
+  EXPECT_EQ(testvalues[2], *(int *)ctx->root->right->left->data);
 
   // Check heights.
-  EXPECT_EQ(2, ctx->head->meta.height);
-  EXPECT_EQ(1, ctx->head->right->meta.height);
-  EXPECT_EQ(0, ctx->head->right->left->meta.height);
+  EXPECT_EQ(2, ctx->root->meta.height);
+  EXPECT_EQ(1, ctx->root->right->meta.height);
+  EXPECT_EQ(0, ctx->root->right->left->meta.height);
 
-  node = ctx->head;
+  node = ctx->root;
   tree_binary_rotate_right(ctx, node);
   height_update_up(node, false);
   /* Should be
@@ -154,22 +154,22 @@ TEST_F(sukat_tree_test, sukat_tree_test_rotates)
    *                /
    *               5
    */
-  EXPECT_EQ(testvalues[0], *(int *)ctx->head->data);
-  EXPECT_EQ(testvalues[4], *(int *)ctx->head->left->data);
-  EXPECT_EQ(testvalues[1], *(int *)ctx->head->right->data);
-  EXPECT_EQ(testvalues[5], *(int *)ctx->head->right->left->data);
-  EXPECT_EQ(testvalues[3], *(int *)ctx->head->right->right->data);
-  EXPECT_EQ(testvalues[2], *(int *)ctx->head->right->right->left->data);
+  EXPECT_EQ(testvalues[0], *(int *)ctx->root->data);
+  EXPECT_EQ(testvalues[4], *(int *)ctx->root->left->data);
+  EXPECT_EQ(testvalues[1], *(int *)ctx->root->right->data);
+  EXPECT_EQ(testvalues[5], *(int *)ctx->root->right->left->data);
+  EXPECT_EQ(testvalues[3], *(int *)ctx->root->right->right->data);
+  EXPECT_EQ(testvalues[2], *(int *)ctx->root->right->right->left->data);
 
   // Check heights.
-  EXPECT_EQ(3, ctx->head->meta.height);
-  EXPECT_EQ(0, ctx->head->left->meta.height);
-  EXPECT_EQ(2, ctx->head->right->meta.height);
-  EXPECT_EQ(0, ctx->head->right->left->meta.height);
-  EXPECT_EQ(1, ctx->head->right->right->meta.height);
-  EXPECT_EQ(0, ctx->head->right->right->left->meta.height);
+  EXPECT_EQ(3, ctx->root->meta.height);
+  EXPECT_EQ(0, ctx->root->left->meta.height);
+  EXPECT_EQ(2, ctx->root->right->meta.height);
+  EXPECT_EQ(0, ctx->root->right->left->meta.height);
+  EXPECT_EQ(1, ctx->root->right->right->meta.height);
+  EXPECT_EQ(0, ctx->root->right->right->left->meta.height);
 
-  node = ctx->head;
+  node = ctx->root;
   tree_binary_rotate_right(ctx, node);
   height_update_up(node, false);
   /* Should be
@@ -183,32 +183,32 @@ TEST_F(sukat_tree_test, sukat_tree_test_rotates)
    *                  /
    *                 5
    */
-  EXPECT_EQ(testvalues[4], *(int *)ctx->head->data);
-  EXPECT_EQ(testvalues[0], *(int *)ctx->head->right->data);
-  EXPECT_EQ(testvalues[1], *(int *)ctx->head->right->right->data);
-  EXPECT_EQ(testvalues[5], *(int *)ctx->head->right->right->left->data);
-  EXPECT_EQ(testvalues[3], *(int *)ctx->head->right->right->right->data);
-  EXPECT_EQ(testvalues[2], *(int *)ctx->head->right->right->right->left->data);
+  EXPECT_EQ(testvalues[4], *(int *)ctx->root->data);
+  EXPECT_EQ(testvalues[0], *(int *)ctx->root->right->data);
+  EXPECT_EQ(testvalues[1], *(int *)ctx->root->right->right->data);
+  EXPECT_EQ(testvalues[5], *(int *)ctx->root->right->right->left->data);
+  EXPECT_EQ(testvalues[3], *(int *)ctx->root->right->right->right->data);
+  EXPECT_EQ(testvalues[2], *(int *)ctx->root->right->right->right->left->data);
 
   // Check heights
-  EXPECT_EQ(4, ctx->head->meta.height);
-  EXPECT_EQ(3, ctx->head->right->meta.height);
-  EXPECT_EQ(2, ctx->head->right->right->meta.height);
-  EXPECT_EQ(0, ctx->head->right->right->left->meta.height);
-  EXPECT_EQ(1, ctx->head->right->right->right->meta.height);
-  EXPECT_EQ(0, ctx->head->right->right->right->left->meta.height);
+  EXPECT_EQ(4, ctx->root->meta.height);
+  EXPECT_EQ(3, ctx->root->right->meta.height);
+  EXPECT_EQ(2, ctx->root->right->right->meta.height);
+  EXPECT_EQ(0, ctx->root->right->right->left->meta.height);
+  EXPECT_EQ(1, ctx->root->right->right->right->meta.height);
+  EXPECT_EQ(0, ctx->root->right->right->right->left->meta.height);
 }
 
-static void validate_find(sukat_tree_node_t *node, int key)
+static void validate_find(tree_node_t *node, int key)
 {
   EXPECT_NE(nullptr, node);
-  ASSERT_NE(nullptr, binary_tree_node_data(node));
-  EXPECT_EQ(key, *(int *)binary_tree_node_data(node));
+  ASSERT_NE(nullptr, tree_binary_node_data(node));
+  EXPECT_EQ(key, *(int *)tree_binary_node_data(node));
 }
 
 TEST_F(sukat_tree_test, sukat_tree_test_find)
 {
-  sukat_tree_node_t *node;
+  tree_node_t *node;
   size_t i;
   int key = 424124214;
 
@@ -235,11 +235,11 @@ struct test_df_data
 static bool test_df_check_cb(sukat_drawer_node_t *dnode, void *caller_data)
 {
   struct test_df_data *tctx = (struct test_df_data *)caller_data;
-  sukat_tree_node_t *node = (sukat_tree_node_t *)dnode;
+  tree_node_t *node = (tree_node_t *)dnode;
 
   EXPECT_LT(tctx->values_iter, tctx->values_size);
   EXPECT_EQ(tctx->values[tctx->values_iter],
-            *(int *)binary_tree_node_data(node));
+            *(int *)tree_binary_node_data(node));
   if (tctx->heights)
     {
       EXPECT_EQ(tctx->heights[tctx->values_iter], node->meta.height);
@@ -250,7 +250,7 @@ static bool test_df_check_cb(sukat_drawer_node_t *dnode, void *caller_data)
 
 TEST_F(sukat_tree_test, sukat_tree_test_remove)
 {
-  sukat_tree_node_t *node, *update;
+  tree_node_t *node, *update;
   size_t key_single = 5, key_one_child = 1, key_two_child = 2, root_key = 0;
   size_t i;
   struct test_df_data tctx = { };
@@ -379,7 +379,7 @@ TEST_F(sukat_tree_test, sukat_tree_test_remove)
   tctx.values[i] = -1;
   tctx.heights[i] = 3;
 
-  sukat_tree_depth_first(ctx, test_df_check_cb, &tctx);
+  tree_binary_depth_first(ctx, test_df_check_cb, &tctx);
   EXPECT_EQ(tctx.values_size, tctx.values_iter);
   free(tctx.values);
   free(tctx.heights);
@@ -417,7 +417,7 @@ TEST_F(sukat_tree_test, sukat_tree_test_remove)
   tctx.values[i] = 3;
   tctx.heights[i] = 2;
 
-  sukat_tree_depth_first(ctx, test_df_check_cb, &tctx);
+  tree_binary_depth_first(ctx, test_df_check_cb, &tctx);
   EXPECT_EQ(tctx.values_size, tctx.values_iter);
   free(tctx.values);
   free(tctx.heights);

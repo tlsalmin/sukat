@@ -2,7 +2,7 @@
  * @file binary_tree.c
  * @brief Binary tree implementation.
  *
- * @addtogroup sukat_tree
+ * @addtogroup tree_binary
  * @{
  */
 
@@ -11,34 +11,34 @@
 #include "sukat_log_internal.h"
 #include "tree_binary.h"
 
-sukat_tree_node_t **tree_binary_parents_ptr(sukat_tree_ctx_t *tree,
-                                            sukat_tree_node_t *node)
+tree_node_t **tree_binary_parents_ptr(tree_ctx_t *tree,
+                                            tree_node_t *node)
 {
   if (!node->parent)
     {
-      return &tree->head;
+      return &tree->root;
     }
   return (node->parent->left == node) ?
     &node->parent->left : &node->parent->right;
 }
 
-sukat_tree_node_t *tree_binary_insert(sukat_tree_ctx_t *ctx, void *data)
+tree_node_t *tree_binary_insert(tree_ctx_t *ctx, void *data)
 {
-  sukat_tree_node_t **parents_ptr = NULL;
-  sukat_tree_node_t *parent = NULL;
+  tree_node_t **parents_ptr = NULL;
+  tree_node_t *parent = NULL;
 
   if (!ctx || !ctx->cbs.cmp_cb)
     {
       ERR(ctx, "Missing %s.", (ctx) ? "compare function" : "context");
       return NULL;
     }
-  if (!ctx->head)
+  if (!ctx->root)
     {
-      parents_ptr = &ctx->head;
+      parents_ptr = &ctx->root;
     }
   else
     {
-      parents_ptr = &ctx->head;
+      parents_ptr = &ctx->root;
       while (*parents_ptr != NULL)
         {
           int cmp_value = ctx->cbs.cmp_cb(data, (*parents_ptr)->data, false);
@@ -56,7 +56,7 @@ sukat_tree_node_t *tree_binary_insert(sukat_tree_ctx_t *ctx, void *data)
       assert(parent != NULL);
     }
   assert(*parents_ptr == NULL);
-  *parents_ptr = (sukat_tree_node_t*)calloc(1, sizeof(*ctx->head));
+  *parents_ptr = (tree_node_t*)calloc(1, sizeof(*ctx->root));
   (*parents_ptr)->data = data;
   (*parents_ptr)->parent = parent;
 
@@ -65,9 +65,9 @@ sukat_tree_node_t *tree_binary_insert(sukat_tree_ctx_t *ctx, void *data)
   return *parents_ptr;
 }
 
-sukat_tree_node_t *tree_binary_minimum(sukat_tree_node_t *node)
+tree_node_t *tree_binary_minimum(tree_node_t *node)
 {
-  sukat_tree_node_t *iter = node;
+  tree_node_t *iter = node;
 
   while (iter->left)
     {
@@ -76,7 +76,7 @@ sukat_tree_node_t *tree_binary_minimum(sukat_tree_node_t *node)
   return iter;
 }
 
-sukat_tree_node_t *tree_binary_successor(sukat_tree_node_t *node)
+tree_node_t *tree_binary_successor(tree_node_t *node)
 {
   if (node && node->right)
     {
@@ -85,21 +85,21 @@ sukat_tree_node_t *tree_binary_successor(sukat_tree_node_t *node)
   return NULL;
 }
 
-sukat_tree_node_t *tree_binary_detach(sukat_tree_ctx_t *ctx,
-                                      sukat_tree_node_t *node)
+tree_node_t *tree_binary_detach(tree_ctx_t *ctx,
+                                      tree_node_t *node)
 {
-  sukat_tree_node_t *ret = NULL;
+  tree_node_t *ret = NULL;
 
   DBG(ctx, "Detaching node %p", node);
   if (ctx && node)
     {
-      sukat_tree_node_t **parents_ptr = tree_binary_parents_ptr(ctx, node);
+      tree_node_t **parents_ptr = tree_binary_parents_ptr(ctx, node);
 
       node->removed = true;
 
       if (!node->left || !node->right)
         {
-          sukat_tree_node_t *new_child = (node->left) ? node->left :
+          tree_node_t *new_child = (node->left) ? node->left :
             node->right;
 
           if (new_child)
@@ -111,8 +111,8 @@ sukat_tree_node_t *tree_binary_detach(sukat_tree_ctx_t *ctx,
         }
       else
         {
-          sukat_tree_node_t *successor = tree_binary_successor(node);
-          sukat_tree_node_t **successor_parents_ptr;
+          tree_node_t *successor = tree_binary_successor(node);
+          tree_node_t **successor_parents_ptr;
 
           assert(successor != NULL);
 
@@ -140,9 +140,9 @@ sukat_tree_node_t *tree_binary_detach(sukat_tree_ctx_t *ctx,
   return ret;
 }
 
-void tree_binary_rotate_left(sukat_tree_ctx_t *tree, sukat_tree_node_t *node)
+void tree_binary_rotate_left(tree_ctx_t *tree, tree_node_t *node)
 {
-  sukat_tree_node_t **parents_ptr, *right;
+  tree_node_t **parents_ptr, *right;
   assert(tree != NULL && node != NULL && node->right != NULL);
 
   parents_ptr = tree_binary_parents_ptr(tree, node);
@@ -159,9 +159,9 @@ void tree_binary_rotate_left(sukat_tree_ctx_t *tree, sukat_tree_node_t *node)
   right->left = node;
 }
 
-void tree_binary_rotate_right(sukat_tree_ctx_t *tree, sukat_tree_node_t *node)
+void tree_binary_rotate_right(tree_ctx_t *tree, tree_node_t *node)
 {
-  sukat_tree_node_t **parents_ptr, *left;
+  tree_node_t **parents_ptr, *left;
   assert(tree != NULL && node != NULL && node->left != NULL);
 
   parents_ptr = tree_binary_parents_ptr(tree, node);
@@ -178,12 +178,12 @@ void tree_binary_rotate_right(sukat_tree_ctx_t *tree, sukat_tree_node_t *node)
   left->right = node;
 }
 
-sukat_tree_node_t *tree_binary_find(sukat_tree_ctx_t *ctx,
-                                    sukat_tree_node_t *node, void *key)
+tree_node_t *tree_binary_find(tree_ctx_t *ctx,
+                                    tree_node_t *node, void *key)
 {
   if (node)
     {
-      int cmp_val = ctx->cbs.cmp_cb(key, binary_tree_node_data(node), true);
+      int cmp_val = ctx->cbs.cmp_cb(key, tree_binary_node_data(node), true);
 
       if (!cmp_val)
         {
@@ -198,8 +198,8 @@ sukat_tree_node_t *tree_binary_find(sukat_tree_ctx_t *ctx,
   return NULL;
 }
 
-static void depth_first_step(sukat_tree_ctx_t *ctx, sukat_drawer_node_cb node_cb,
-                             void *caller_ctx, sukat_tree_node_t *node)
+static void depth_first_step(tree_ctx_t *ctx, sukat_drawer_node_cb node_cb,
+                             void *caller_ctx, tree_node_t *node)
 {
   if (node)
     {
@@ -212,16 +212,16 @@ static void depth_first_step(sukat_tree_ctx_t *ctx, sukat_drawer_node_cb node_cb
     }
 }
 
-void tree_binary_depth_first(sukat_tree_ctx_t *ctx, sukat_drawer_node_cb node_cb,
+void tree_binary_depth_first(tree_ctx_t *ctx, sukat_drawer_node_cb node_cb,
                              void *caller_ctx)
 {
   if (ctx)
     {
-      depth_first_step(ctx, node_cb, caller_ctx, ctx->head);
+      depth_first_step(ctx, node_cb, caller_ctx, ctx->root);
     }
 }
 
-void *binary_tree_node_data(sukat_tree_node_t *node)
+void *tree_binary_node_data(tree_node_t *node)
 {
   if (node)
     {
@@ -230,25 +230,25 @@ void *binary_tree_node_data(sukat_tree_node_t *node)
   return NULL;
 }
 
-void tree_binary_node_free(sukat_tree_ctx_t *ctx, sukat_tree_node_t *node)
+void tree_binary_node_free(tree_ctx_t *ctx, tree_node_t *node)
 {
   if (ctx->cbs.destroy_cb && !node->removed)
     {
-      ctx->cbs.destroy_cb(binary_tree_node_data(node));
+      ctx->cbs.destroy_cb(tree_binary_node_data(node));
     }
   free(node);
 }
 
 static bool node_df_cb(sukat_drawer_node_t *dnode, void *caller_data)
 {
-  sukat_tree_node_t *node = (sukat_tree_node_t *)dnode;
-  sukat_tree_ctx_t *ctx = (sukat_tree_ctx_t *)caller_data;
+  tree_node_t *node = (tree_node_t *)dnode;
+  tree_ctx_t *ctx = (tree_ctx_t *)caller_data;
   tree_binary_detach(ctx, node);
   tree_binary_node_free(ctx, node);
   return true;
 }
 
-void tree_binary_destroy(sukat_tree_ctx_t *ctx)
+void tree_binary_destroy(tree_ctx_t *ctx)
 {
   DBG(ctx, "Destroying tree %p", ctx);
   ctx->destroyed = true;

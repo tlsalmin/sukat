@@ -1,19 +1,19 @@
 /*!
- * @file sukat_tree.h
+ * @file tree_avl.c
  * @brief Tree structure for storing data.
  *
- * @addtogroup sukat_tree
+ * @addtogroup tree_avl
  * @{
  */
 #include <string.h>
 #include <stdlib.h>
 #include <assert.h>
 
-#include "sukat_tree.h"
+#include "tree_avl.h"
 #include "tree_binary.h"
 #include "sukat_log_internal.h"
 
-static int node_height(sukat_tree_node_t *node)
+static int node_height(tree_node_t *node)
 {
   if (!node)
     {
@@ -22,7 +22,7 @@ static int node_height(sukat_tree_node_t *node)
   return node->meta.height;
 }
 
-static void height_count(sukat_tree_node_t *node)
+static void height_count(tree_node_t *node)
 {
   assert(node != NULL);
 #define MAX(x, y) ((x > y) ? x : y)
@@ -31,16 +31,16 @@ static void height_count(sukat_tree_node_t *node)
 #undef MAX
 }
 
-sukat_tree_ctx_t *sukat_tree_create(struct sukat_drawer_params *params,
-                                    struct sukat_drawer_cbs *cbs)
+tree_ctx_t *tree_avl_create(struct sukat_drawer_params *params,
+                                  struct sukat_drawer_cbs *cbs)
 {
-  sukat_tree_ctx_t *ctx;
+  tree_ctx_t *ctx;
 
   if (!params)
     {
       return NULL;
     }
-  ctx = (sukat_tree_ctx_t *)calloc(1, sizeof(*ctx));
+  ctx = (tree_ctx_t *)calloc(1, sizeof(*ctx));
   if (!ctx)
     {
       return NULL;
@@ -58,7 +58,7 @@ sukat_tree_ctx_t *sukat_tree_create(struct sukat_drawer_params *params,
   return ctx;
 }
 
-static void height_update_up(sukat_tree_node_t *node,
+static void height_update_up(tree_node_t *node,
                              __attribute((unused))bool rebalance)
 {
   while (node)
@@ -68,9 +68,9 @@ static void height_update_up(sukat_tree_node_t *node,
     }
 }
 
-void sukat_tree_remove(sukat_tree_ctx_t *ctx, sukat_tree_node_t *node)
+void tree_avl_remove(tree_ctx_t *ctx, tree_node_t *node)
 {
-  sukat_tree_node_t *update_from = tree_binary_detach(ctx, node);
+  tree_node_t *update_from = tree_binary_detach(ctx, node);
 
   if (update_from && !ctx->destroyed)
     {
@@ -79,14 +79,14 @@ void sukat_tree_remove(sukat_tree_ctx_t *ctx, sukat_tree_node_t *node)
   tree_binary_node_free(ctx, node);
 }
 
-sukat_tree_node_t *sukat_tree_find(sukat_tree_ctx_t *ctx, void *key)
+tree_node_t *sukat_tree_find(tree_ctx_t *ctx, void *key)
 {
-  return tree_binary_find(ctx, ctx->head, key);
+  return tree_binary_find(ctx, ctx->root, key);
 }
 
-sukat_tree_node_t *sukat_tree_add(sukat_tree_ctx_t *ctx, void *data)
+tree_node_t *tree_avl_add(tree_ctx_t *ctx, void *data)
 {
-  sukat_tree_node_t *node = tree_binary_insert(ctx, data);
+  tree_node_t *node = tree_binary_insert(ctx, data);
 
   if (!node)
     {
@@ -97,11 +97,5 @@ sukat_tree_node_t *sukat_tree_add(sukat_tree_ctx_t *ctx, void *data)
 
   return node;
 };
-
-void sukat_tree_depth_first(sukat_tree_ctx_t *ctx, sukat_drawer_node_cb node_cb,
-                            void *caller_ctx)
-{
-  tree_binary_depth_first(ctx, node_cb, caller_ctx);
-}
 
 /*! }@ */
