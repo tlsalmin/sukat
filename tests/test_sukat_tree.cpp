@@ -39,7 +39,7 @@ protected:
           node = tree_binary_insert(ctx, &testvalues[i]);
           EXPECT_NE(nullptr, ctx);
           EXPECT_EQ(testvalues[i], *(int *)node->data);
-          height_update_up(node, false);
+          height_update_up(ctx, node, false);
         }
       /* Should be
        *            -1
@@ -98,7 +98,7 @@ TEST_F(sukat_tree_test, sukat_tree_test_rotates)
 
   node = ctx->root;
   tree_binary_rotate_left(ctx, node);
-  height_update_up(node, false);
+  height_update_up(ctx, node, false);
 
   /* Should be
    *             4
@@ -124,7 +124,7 @@ TEST_F(sukat_tree_test, sukat_tree_test_rotates)
 
   node = ctx->root->right;
   tree_binary_rotate_left(ctx, node);
-  height_update_up(node, false);
+  height_update_up(ctx, node, false);
 
   /* Should be
    *             4
@@ -144,7 +144,7 @@ TEST_F(sukat_tree_test, sukat_tree_test_rotates)
 
   node = ctx->root;
   tree_binary_rotate_right(ctx, node);
-  height_update_up(node, false);
+  height_update_up(ctx, node, false);
   /* Should be
    *            -1
    *            / \
@@ -171,7 +171,7 @@ TEST_F(sukat_tree_test, sukat_tree_test_rotates)
 
   node = ctx->root;
   tree_binary_rotate_right(ctx, node);
-  height_update_up(node, false);
+  height_update_up(ctx, node, false);
   /* Should be
    *            -3
    *              \
@@ -264,7 +264,7 @@ TEST_F(sukat_tree_test, sukat_tree_test_remove)
   node = sukat_tree_find(ctx, (void *)&testvalues[key_single]);
   ASSERT_EQ(nullptr, node);
 
-  height_update_up(update, false);
+  height_update_up(ctx, update, false);
 
   /* Check that everything else is still in place. */
   for (i = 0; i < testvalues_len; i++)
@@ -285,7 +285,7 @@ TEST_F(sukat_tree_test, sukat_tree_test_remove)
   free(node);
   node = sukat_tree_find(ctx, (void *)&testvalues[key_one_child]);
   ASSERT_EQ(nullptr, node);
-  height_update_up(update, false);
+  height_update_up(ctx, update, false);
 
   for (i = 0; i < testvalues_len; i++)
     {
@@ -299,10 +299,10 @@ TEST_F(sukat_tree_test, sukat_tree_test_remove)
 
   node = tree_binary_insert(ctx, &testvalues[key_single]);
   EXPECT_NE(nullptr, node);
-  height_update_up(node, false);
+  height_update_up(ctx, node, false);
   node = tree_binary_insert(ctx, &testvalues[key_one_child]);
   EXPECT_NE(nullptr, node);
-  height_update_up(node, false);
+  height_update_up(ctx, node, false);
 
   /* Should be
    *            -1
@@ -343,7 +343,7 @@ TEST_F(sukat_tree_test, sukat_tree_test_remove)
   tree_binary_node_free(ctx, node);
   node = sukat_tree_find(ctx, (void *)&testvalues[key_two_child]);
   EXPECT_EQ(nullptr, node);
-  height_update_up(update, false);
+  height_update_up(ctx, update, false);
 
   for (i = 0; i < testvalues_len; i++)
     {
@@ -390,7 +390,7 @@ TEST_F(sukat_tree_test, sukat_tree_test_remove)
   EXPECT_NE(nullptr, node);
   update = tree_binary_detach(ctx, node);
   tree_binary_node_free(ctx, node);
-  height_update_up(update, false);
+  height_update_up(ctx, update, false);
   node = sukat_tree_find(ctx, (void *)&testvalues[root_key]);
   EXPECT_EQ(nullptr, node);
 
@@ -424,3 +424,171 @@ TEST_F(sukat_tree_test, sukat_tree_test_remove)
   memset(&tctx, 0, sizeof(tctx));
 }
 
+class sukat_tree_test_avl : public ::testing::Test
+{
+protected:
+  sukat_tree_test_avl() {
+  }
+
+  virtual ~sukat_tree_test_avl() {
+  }
+
+  virtual void SetUp() {
+      memset(&default_params, 0, sizeof(default_params));
+      memset(&default_cbs, 0, sizeof(default_cbs));
+      default_cbs.log_cb = test_log_cb;
+      default_cbs.cmp_cb = tree_test_cmp_cb;
+      ctx = NULL;
+  }
+
+  virtual void TearDown() {
+      tree_binary_destroy(ctx);
+  }
+
+  struct sukat_drawer_params default_params;
+  struct sukat_drawer_cbs default_cbs;
+  tree_ctx_t *ctx;
+};
+
+static bool check_height(sukat_drawer_node_t *node,
+                         __attribute__((unused))void *caller_data)
+{
+  int balance = node_balance_get((tree_node_t *)node);
+  EXPECT_LE(-1, balance);
+  EXPECT_GE(1, balance);
+  return true;
+}
+
+TEST_F(sukat_tree_test_avl, sukat_tree_test_avl_insert_and_remove)
+{
+  int values[] = {1, 6, 9, 8, 4, 12, 3, 22};
+  int remove_key;
+  size_t n_values = sizeof(values) / sizeof(*values);
+  size_t i;
+  struct test_df_data tctx = { };
+  tree_node_t *node;
+
+  tctx.values_size = 8;
+  tctx.values = (int *)calloc(tctx.values_size, sizeof(*tctx.values));
+  tctx.heights = (size_t *)calloc(tctx.values_size, sizeof(*tctx.heights));
+
+  ctx = tree_avl_create(&default_params, &default_cbs);
+  EXPECT_NE(nullptr, ctx);
+
+  for (i = 0; i < 2; i++)
+    {
+      node = tree_avl_add(ctx, &values[i]);
+      EXPECT_NE(nullptr, node);
+    }
+  i = 0;
+  /* Sanity check. Should be
+   *    1
+   *     \
+   *      9
+   */
+  tctx.values[i] = 6;
+  tctx.heights[i++] = 0;
+  tctx.values[i] = 1;
+  tctx.heights[i++] = 1;
+  tree_binary_depth_first(ctx, test_df_check_cb, &tctx);
+  EXPECT_EQ(2, tctx.values_iter);
+  i = tctx.values_iter = 0;
+
+  node = tree_avl_add(ctx, &values[2]);
+  EXPECT_NE(nullptr, node);
+  /*  Should be
+   *    6
+   *   / \
+   *  1   9
+   */
+  tctx.values[i] = 1;
+  tctx.heights[i++] = 0;
+  tctx.values[i] = 9;
+  tctx.heights[i++] = 0;
+  tctx.values[i] = 6;
+  tctx.heights[i] = 1;
+  tree_binary_depth_first(ctx, test_df_check_cb, &tctx);
+  EXPECT_EQ(3, tctx.values_iter);
+  i = tctx.values_iter = 0;
+
+  for (i = 3; i < n_values; i++)
+    {
+      node = tree_avl_add(ctx, &values[i]);
+      EXPECT_NE(nullptr, node);
+    }
+  /* Should be
+   *        6
+   *       / \
+   *      3   9
+   *     / \ / \
+   *    1  4 8  12
+   *             \
+   *              22
+   */
+  i = 0;
+  tctx.values[i] = 1;
+  tctx.heights[i++] = 0;
+  tctx.values[i] = 4;
+  tctx.heights[i++] = 0;
+  tctx.values[i] = 3;
+  tctx.heights[i++] = 1;
+  tctx.values[i] = 8;
+  tctx.heights[i++] = 0;
+  tctx.values[i] = 22;
+  tctx.heights[i++] = 0;
+  tctx.values[i] = 12;
+  tctx.heights[i++] = 1;
+  tctx.values[i] = 9;
+  tctx.heights[i++] = 2;
+  tctx.values[i] = 6;
+  tctx.heights[i] = 3;
+
+  tree_binary_depth_first(ctx, test_df_check_cb, &tctx);
+  EXPECT_EQ(tctx.values_size, tctx.values_iter);
+  tctx.values_iter = 0;
+
+  // Check that all are still found.
+  for (i = 0; i < n_values; i++)
+    {
+      node = sukat_tree_find(ctx, (void *)&values[i]);
+      EXPECT_NE(nullptr, node);
+    }
+
+  remove_key = 8;
+  node = sukat_tree_find(ctx, (void *)&remove_key);
+  EXPECT_NE(nullptr, node);
+  tree_avl_remove(ctx, node);
+  node = sukat_tree_find(ctx, (void *)&remove_key);
+  EXPECT_EQ(nullptr, node);
+
+  /* Should be
+   *        6
+   *       / \
+   *      3   12
+   *     / \  /\
+   *    1  4 9  22
+   */
+  i = 0;
+  tctx.values[i] = 1;
+  tctx.heights[i++] = 0;
+  tctx.values[i] = 4;
+  tctx.heights[i++] = 0;
+  tctx.values[i] = 3;
+  tctx.heights[i++] = 1;
+  tctx.values[i] = 9;
+  tctx.heights[i++] = 0;
+  tctx.values[i] = 22;
+  tctx.heights[i++] = 0;
+  tctx.values[i] = 12;
+  tctx.heights[i++] = 1;
+  tctx.values[i] = 6;
+  tctx.heights[i++] = 2;
+
+  tree_binary_depth_first(ctx, test_df_check_cb, &tctx);
+  EXPECT_EQ(tctx.values_size - 1, tctx.values_iter);
+  tctx.values_iter = 0;
+
+  free(tctx.values);
+  free(tctx.heights);
+  memset(&tctx, 0, sizeof(tctx));
+}
