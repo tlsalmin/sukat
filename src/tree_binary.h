@@ -15,14 +15,17 @@
 
 struct sukat_tree_ctx
 {
+  enum sukat_drawer_type type;
   sukat_tree_node_t *head;
-  struct sukat_tree_params params;
-  struct sukat_tree_cbs cbs;
+  struct sukat_drawer_params params;
+  struct sukat_drawer_cbs cbs;
   bool destroyed;
 };
 
 struct sukat_tree_node_ctx
 {
+  enum sukat_drawer_type type;
+  sukat_tree_node_t *head;
   sukat_tree_node_t *parent;
   sukat_tree_node_t *left;
   sukat_tree_node_t *right;
@@ -127,8 +130,14 @@ sukat_tree_node_t *tree_binary_find(sukat_tree_ctx_t *ctx,
  * @param node_cb       Callback to invoke for each node.
  * @param caller_ctx    Context given to caller on each node
  */
-void tree_binary_depth_first(sukat_tree_ctx_t *ctx, sukat_tree_node_cb node_cb,
-                             void *caller_ctx);
+void tree_binary_depth_first(sukat_tree_ctx_t *ctx,
+                             sukat_drawer_node_cb node_cb, void *caller_ctx);
+
+void *binary_tree_node_data(sukat_tree_node_t *node);
+
+void tree_binary_destroy(sukat_tree_ctx_t *ctx);
+
+void tree_binary_node_free(sukat_tree_ctx_t *ctx, sukat_tree_node_t *node);
 
 #endif /* SUKAT_BINARY_TREE_H */
 

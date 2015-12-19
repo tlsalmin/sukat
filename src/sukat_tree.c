@@ -31,8 +31,8 @@ static void height_count(sukat_tree_node_t *node)
 #undef MAX
 }
 
-sukat_tree_ctx_t *sukat_tree_create(struct sukat_tree_params *params,
-                                    struct sukat_tree_cbs *cbs)
+sukat_tree_ctx_t *sukat_tree_create(struct sukat_drawer_params *params,
+                                    struct sukat_drawer_cbs *cbs)
 {
   sukat_tree_ctx_t *ctx;
 
@@ -45,6 +45,7 @@ sukat_tree_ctx_t *sukat_tree_create(struct sukat_tree_params *params,
     {
       return NULL;
     }
+  ctx->type = SUKAT_DRAWER_TREE_AVL;
   if (cbs)
     {
       memcpy(&ctx->cbs, cbs, sizeof(*cbs));
@@ -55,24 +56,6 @@ sukat_tree_ctx_t *sukat_tree_create(struct sukat_tree_params *params,
     }
   DBG(ctx, "Created tree %p", ctx);
   return ctx;
-}
-
-void *sukat_tree_node_data(sukat_tree_node_t *node)
-{
-  if (node)
-    {
-      return node->data;
-    }
-  return NULL;
-}
-
-static void node_free(sukat_tree_ctx_t *ctx, sukat_tree_node_t *node)
-{
-  if (ctx->cbs.destroy_cb && !node->removed)
-    {
-      ctx->cbs.destroy_cb(sukat_tree_node_data(node));
-    }
-  free(node);
 }
 
 static void height_update_up(sukat_tree_node_t *node,
@@ -93,7 +76,7 @@ void sukat_tree_remove(sukat_tree_ctx_t *ctx, sukat_tree_node_t *node)
     {
       height_update_up(update_from, true);
     }
-  node_free(ctx, node);
+  tree_binary_node_free(ctx, node);
 }
 
 sukat_tree_node_t *sukat_tree_find(sukat_tree_ctx_t *ctx, void *key)
@@ -115,26 +98,10 @@ sukat_tree_node_t *sukat_tree_add(sukat_tree_ctx_t *ctx, void *data)
   return node;
 };
 
-static bool node_df_cb(sukat_tree_node_t *node, void *caller_data)
-{
-  sukat_tree_ctx_t *ctx = (sukat_tree_ctx_t *)caller_data;
-  tree_binary_detach(ctx, node);
-  node_free(ctx, node);
-  return true;
-}
-
-void sukat_tree_depth_first(sukat_tree_ctx_t *ctx, sukat_tree_node_cb node_cb,
+void sukat_tree_depth_first(sukat_tree_ctx_t *ctx, sukat_drawer_node_cb node_cb,
                             void *caller_ctx)
 {
   tree_binary_depth_first(ctx, node_cb, caller_ctx);
-}
-
-void sukat_tree_destroy(sukat_tree_ctx_t *ctx)
-{
-  DBG(ctx, "Destroying tree %p", ctx);
-  ctx->destroyed = true;
-  sukat_tree_depth_first(ctx, node_df_cb, ctx);
-  free(ctx);
 }
 
 /*! }@ */

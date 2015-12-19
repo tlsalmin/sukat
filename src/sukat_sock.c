@@ -22,7 +22,7 @@
 
 #include "sukat_sock.h"
 #include "sukat_log_internal.h"
-#include "sukat_tree.h"
+#include "sukat_drawer.h"
 
 /*!
  * Structure used to store either partially sent data or partially received
@@ -42,7 +42,7 @@ struct client_ctx
   bool in_callback; //!< If true, don't delete this immediately as we might
   bool destroyed; //!< If true, destroy on first chance.
   bool waiting_on_write; //!< If true EPOLLOUT is set
-  sukat_tree_node_t *node;
+  sukat_drawer_node_t *node;
   struct rw_cache cache;
 };
 
@@ -59,8 +59,8 @@ struct sukat_sock_ctx
   struct sukat_sock_cbs cbs;
   int fd; //!< Main fd for accept to server or connected fd for client.
   void *caller_ctx; //!< If true, dont delete immediately.
-  sukat_tree_ctx_t *client_tree; //!< Tree of active clients sorted by fd.
-  sukat_tree_ctx_t *removed_tree; /*!< Tree collected during callbacks where
+  sukat_drawer_t *client_drawer; //!< Drawer of active clients sorted by fd.
+  sukat_drawer_t *removed_drawer; /*!< Drawer collected during callbacks where
                                        clients were destroyd */
   bool connect_in_progress; //! If set, a connect returned EINPROCESS
   bool is_server; //!< True for server operation.
@@ -871,10 +871,10 @@ void sukat_sock_destroy(sukat_sock_ctx_t *ctx)
                   strerror(errno));
           }
         }
-      if (ctx->client_tree)
+      if (ctx->client_drawer)
         {
-          sukat_tree_destroy(ctx->client_tree);
-          // TODO: destroy stuff in da tree.
+          sukat_drawer_destroy(ctx->client_drawer);
+          // TODO: destroy stuff in da drawer.
         }
       if (ctx->epoll_fd > 0)
         {

@@ -183,7 +183,7 @@ sukat_tree_node_t *tree_binary_find(sukat_tree_ctx_t *ctx,
 {
   if (node)
     {
-      int cmp_val = ctx->cbs.cmp_cb(key, sukat_tree_node_data(node), true);
+      int cmp_val = ctx->cbs.cmp_cb(key, binary_tree_node_data(node), true);
 
       if (!cmp_val)
         {
@@ -198,7 +198,7 @@ sukat_tree_node_t *tree_binary_find(sukat_tree_ctx_t *ctx,
   return NULL;
 }
 
-static void depth_first_step(sukat_tree_ctx_t *ctx, sukat_tree_node_cb node_cb,
+static void depth_first_step(sukat_tree_ctx_t *ctx, sukat_drawer_node_cb node_cb,
                              void *caller_ctx, sukat_tree_node_t *node)
 {
   if (node)
@@ -207,12 +207,12 @@ static void depth_first_step(sukat_tree_ctx_t *ctx, sukat_tree_node_cb node_cb,
       depth_first_step(ctx, node_cb, caller_ctx, node->right);
       if (node_cb)
         {
-          node_cb(node, caller_ctx);
+          node_cb((sukat_drawer_node_t *)node, caller_ctx);
         }
     }
 }
 
-void tree_binary_depth_first(sukat_tree_ctx_t *ctx, sukat_tree_node_cb node_cb,
+void tree_binary_depth_first(sukat_tree_ctx_t *ctx, sukat_drawer_node_cb node_cb,
                              void *caller_ctx)
 {
   if (ctx)
@@ -221,5 +221,39 @@ void tree_binary_depth_first(sukat_tree_ctx_t *ctx, sukat_tree_node_cb node_cb,
     }
 }
 
+void *binary_tree_node_data(sukat_tree_node_t *node)
+{
+  if (node)
+    {
+      return node->data;
+    }
+  return NULL;
+}
+
+void tree_binary_node_free(sukat_tree_ctx_t *ctx, sukat_tree_node_t *node)
+{
+  if (ctx->cbs.destroy_cb && !node->removed)
+    {
+      ctx->cbs.destroy_cb(binary_tree_node_data(node));
+    }
+  free(node);
+}
+
+static bool node_df_cb(sukat_drawer_node_t *dnode, void *caller_data)
+{
+  sukat_tree_node_t *node = (sukat_tree_node_t *)dnode;
+  sukat_tree_ctx_t *ctx = (sukat_tree_ctx_t *)caller_data;
+  tree_binary_detach(ctx, node);
+  tree_binary_node_free(ctx, node);
+  return true;
+}
+
+void tree_binary_destroy(sukat_tree_ctx_t *ctx)
+{
+  DBG(ctx, "Destroying tree %p", ctx);
+  ctx->destroyed = true;
+  tree_binary_depth_first(ctx, node_df_cb, ctx);
+  free(ctx);
+}
 
 /*! }@ */
