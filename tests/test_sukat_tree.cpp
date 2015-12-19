@@ -3,6 +3,7 @@
 
 extern "C"{
 #include "sukat_log_internal.c"
+#include "tree_binary.c"
 #include "sukat_tree.c"
 }
 
@@ -35,7 +36,7 @@ protected:
 
       for (i = 0; i < testvalues_len; i++)
         {
-          node = binary_insert(ctx, &testvalues[i]);
+          node = tree_binary_insert(ctx, &testvalues[i]);
           EXPECT_NE(nullptr, ctx);
           EXPECT_EQ(testvalues[i], *(int *)node->data);
           height_update_up(node, false);
@@ -78,6 +79,8 @@ TEST_F(sukat_tree_test, sukat_tree_test_init)
 
 TEST_F(sukat_tree_test, sukat_tree_test_rotates)
 {
+  sukat_tree_node_t *node;
+
   EXPECT_EQ(*(int *)ctx->head->data, testvalues[0]);
   EXPECT_EQ(*(int *)ctx->head->left->data, testvalues[4]);
   EXPECT_EQ(*(int *)ctx->head->right->data, testvalues[1]);
@@ -93,7 +96,9 @@ TEST_F(sukat_tree_test, sukat_tree_test_rotates)
   EXPECT_EQ(1, ctx->head->right->right->meta.height);
   EXPECT_EQ(0, ctx->head->right->right->right->meta.height);
 
-  rotate_left(ctx, ctx->head, true, false);
+  node = ctx->head;
+  tree_binary_rotate_left(ctx, node);
+  height_update_up(node, false);
 
   /* Should be
    *             4
@@ -117,7 +122,9 @@ TEST_F(sukat_tree_test, sukat_tree_test_rotates)
   EXPECT_EQ(1, ctx->head->right->meta.height);
   EXPECT_EQ(0, ctx->head->right->right->meta.height);
 
-  rotate_left(ctx, ctx->head->right, true, false);
+  node = ctx->head->right;
+  tree_binary_rotate_left(ctx, node);
+  height_update_up(node, false);
 
   /* Should be
    *             4
@@ -135,7 +142,9 @@ TEST_F(sukat_tree_test, sukat_tree_test_rotates)
   EXPECT_EQ(1, ctx->head->right->meta.height);
   EXPECT_EQ(0, ctx->head->right->left->meta.height);
 
-  rotate_right(ctx, ctx->head, true, false);
+  node = ctx->head;
+  tree_binary_rotate_right(ctx, node);
+  height_update_up(node, false);
   /* Should be
    *            -1
    *            / \
@@ -160,7 +169,9 @@ TEST_F(sukat_tree_test, sukat_tree_test_rotates)
   EXPECT_EQ(1, ctx->head->right->right->meta.height);
   EXPECT_EQ(0, ctx->head->right->right->left->meta.height);
 
-  rotate_right(ctx, ctx->head, true, false);
+  node = ctx->head;
+  tree_binary_rotate_right(ctx, node);
+  height_update_up(node, false);
   /* Should be
    *            -3
    *              \
@@ -247,7 +258,7 @@ TEST_F(sukat_tree_test, sukat_tree_test_remove)
   node = sukat_tree_find(ctx, (void *)&testvalues[key_single]);
   ASSERT_NE(nullptr, node);
 
-  update = binary_detach(ctx, node);
+  update = tree_binary_detach(ctx, node);
   free(node);
   node = sukat_tree_find(ctx, (void *)&testvalues[key_single]);
   ASSERT_EQ(nullptr, node);
@@ -269,7 +280,7 @@ TEST_F(sukat_tree_test, sukat_tree_test_remove)
   node = sukat_tree_find(ctx, (void *)&testvalues[key_one_child]);
   ASSERT_NE(nullptr, node);
 
-  update = binary_detach(ctx, node);
+  update = tree_binary_detach(ctx, node);
   free(node);
   node = sukat_tree_find(ctx, (void *)&testvalues[key_one_child]);
   ASSERT_EQ(nullptr, node);
@@ -285,10 +296,10 @@ TEST_F(sukat_tree_test, sukat_tree_test_remove)
       validate_find(node, testvalues[i]);
     }
 
-  node = binary_insert(ctx, &testvalues[key_single]);
+  node = tree_binary_insert(ctx, &testvalues[key_single]);
   EXPECT_NE(nullptr, node);
   height_update_up(node, false);
-  node = binary_insert(ctx, &testvalues[key_one_child]);
+  node = tree_binary_insert(ctx, &testvalues[key_one_child]);
   EXPECT_NE(nullptr, node);
   height_update_up(node, false);
 
@@ -327,7 +338,7 @@ TEST_F(sukat_tree_test, sukat_tree_test_remove)
 
   node = sukat_tree_find(ctx, (void *)&testvalues[key_two_child]);
   EXPECT_NE(nullptr, node);
-  update = binary_detach(ctx, node);
+  update = tree_binary_detach(ctx, node);
   node_free(ctx, node);
   node = sukat_tree_find(ctx, (void *)&testvalues[key_two_child]);
   EXPECT_EQ(nullptr, node);
@@ -376,7 +387,7 @@ TEST_F(sukat_tree_test, sukat_tree_test_remove)
   /* Remove root. */
   node = sukat_tree_find(ctx, (void *)&testvalues[root_key]);
   EXPECT_NE(nullptr, node);
-  update = binary_detach(ctx, node);
+  update = tree_binary_detach(ctx, node);
   node_free(ctx, node);
   height_update_up(update, false);
   node = sukat_tree_find(ctx, (void *)&testvalues[root_key]);
