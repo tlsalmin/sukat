@@ -45,6 +45,11 @@ tree_node_t *tree_avl_add(tree_ctx_t *ctx, void *data);
  */
 void tree_avl_remove(tree_ctx_t *ctx, tree_node_t *node);
 
+/*!
+ * TODO: rename
+ */
+tree_node_t *sukat_tree_find(tree_ctx_t *ctx, void *key);
+
 #endif /* TREE_AVL_H */
 
 /*! }@ */

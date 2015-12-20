@@ -110,4 +110,21 @@ void sukat_drawer_iter(sukat_drawer_t *ctx, sukat_drawer_node_cb node_cb,
     }
 }
 
+sukat_drawer_node_t *sukat_drawer_find(sukat_drawer_t *ctx, void *key)
+{
+  if (ctx)
+    {
+      enum sukat_drawer_type type = *(enum sukat_drawer_type *)ctx;
+
+      switch (type)
+        {
+        case SUKAT_DRAWER_TREE_AVL:
+          return (sukat_drawer_node_t *)sukat_tree_find((tree_ctx_t *)ctx, key);
+        default:
+        break;
+        }
+    }
+  return NULL;
+}
+
 /*! }@ */

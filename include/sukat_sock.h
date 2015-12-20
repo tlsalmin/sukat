@@ -199,7 +199,8 @@ enum sukat_sock_send_return
  * the server.
  *
  * @param ctx           Sukat API context.
- * @param id            Unique ID for client received in \ref sukat_sock_new_conn_cb
+ * @param id            Unique ID for client received in
+ *                      \ref sukat_sock_new_conn_cb. Ignored for clients.
  * @param msg           Message to send.
  * @param msg_len       Length of message.
  *

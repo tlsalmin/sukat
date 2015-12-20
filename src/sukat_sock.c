@@ -43,7 +43,8 @@ struct client_ctx
   bool destroyed; //!< If true, destroy on first chance.
   bool waiting_on_write; //!< If true EPOLLOUT is set
   sukat_drawer_node_t *node;
-  struct rw_cache cache;
+  struct rw_cache read_cache;
+  struct rw_cache write_cache;
 };
 
 struct sukat_sock_ctx
@@ -71,7 +72,8 @@ struct sukat_sock_ctx
   int master_epoll_fd;
   int domain;
   int type;
-  struct rw_cache cache;
+  struct rw_cache read_cache;
+  struct rw_cache write_cache;
 };
 
 static void enter_cb(sukat_sock_ctx_t *ctx, struct client_ctx *client)
@@ -211,8 +213,11 @@ static bool cache_to(struct rw_cache *cache, uint8_t *buf, size_t buf_amount)
   return true;
 }
 
+#define RW_CACHE(_ptr, _write)                                                \
+  ((write) ? &_ptr->write_cache : &_ptr->read_cache)
+
 static bool cache(sukat_sock_ctx_t *ctx, struct client_ctx *client,
-                  uint8_t *buf, size_t buf_amount)
+                  uint8_t *buf, size_t buf_amount, bool write)
 {
   bool ret;
 
@@ -223,15 +228,16 @@ static bool cache(sukat_sock_ctx_t *ctx, struct client_ctx *client,
     }
   if (client)
     {
-      ret = cache_to(&client->cache, buf, buf_amount);
+      ret = cache_to(RW_CACHE(client, write), buf, buf_amount);
     }
   else
     {
-      ret = cache_to(&ctx->cache, buf, buf_amount);
+      ret = cache_to(RW_CACHE(ctx, write), buf, buf_amount);
     }
   if (ret == false)
     {
-      ERR(ctx, "Cannot cache data: %s", strerror(errno));
+      ERR(ctx, "Cannot cache %s data: %s", (write) ? "write" : "read",
+          strerror(errno));
     }
   return ret;
 }
@@ -249,16 +255,16 @@ static void uncache_from(struct rw_cache *cache, uint8_t *buf, size_t *uncached)
 }
 
 static void uncache(sukat_sock_ctx_t *ctx, struct client_ctx *client,
-                    uint8_t *buf, size_t *uncached)
+                    uint8_t *buf, size_t *uncached, bool write)
 {
   assert(ctx != NULL && buf != NULL && uncached != NULL);
   if (client)
     {
-      uncache_from(&client->cache, buf, uncached);
+      uncache_from(RW_CACHE(client, write), buf, uncached);
     }
   else
     {
-      uncache_from(&ctx->cache, buf, uncached);
+      uncache_from(RW_CACHE(ctx, write), buf, uncached);
     }
 }
 
@@ -478,7 +484,8 @@ static void client_close(sukat_sock_ctx_t *ctx, struct client_ctx *client)
       events |= EPOLLOUT;
     }
   event_ctl(ctx->epoll_fd, client->fd, NULL, EPOLL_CTL_DEL, events);
-  free_cache(&client->cache);
+  free_cache(&client->read_cache);
+  free_cache(&client->write_cache);
   close(client->fd);
   if (!client->destroyed)
     {
@@ -586,6 +593,25 @@ static bool keep_going(sukat_sock_ctx_t *ctx,
   return true;
 }
 
+static bool ret_was_ok(sukat_sock_ctx_t *ctx, struct client_ctx *client,
+                       ssize_t ret)
+{
+  if (ret <= 0)
+    {
+      if (!(ret == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)))
+        {
+          int client_id = (client) ? client->fd : 0;
+          void *caller_ctx = get_caller_ctx(ctx, client);
+
+          ERR(ctx, "Connection %s%s", (ret == 0) ? "closed" :
+              "severed: ", (ret == -1) ? strerror(errno) : "");
+          USE_CB(ctx, client, error_cb, caller_ctx, client_id, errno);
+          return false;
+        }
+    }
+  return true;
+}
+
 #define BUF_LEFT (sizeof(buf) - n_read)
 #define UNPROCESSED (n_read - processed)
 
@@ -599,21 +625,15 @@ static ret_t read_stream(sukat_sock_ctx_t *ctx, struct client_ctx *client)
   void *caller_ctx = get_caller_ctx(ctx, client);
   int client_id = (client) ? client->fd : 0;
 
-  uncache(ctx, client, buf, &n_read);
+  uncache(ctx, client, buf, &n_read, false);
 
   do
     {
       read_now = read(fd, buf + n_read, BUF_LEFT);
     } while (read_now > 0 && (n_read += read_now) < sizeof(buf));
-  if (read_now <= 0)
+  if (ret_was_ok(ctx, client, read_now) != true)
     {
-      if (!(read_now == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)))
-        {
-          ERR(ctx, "Connection %s%s", (read_now == 0) ? "closed" :
-              "severed: ", (read_now == -1) ? strerror(errno) : "");
-          USE_CB(ctx, client, error_cb, caller_ctx, client_id, errno);
-          return ERR_FATAL;
-        }
+      return ERR_FATAL;
     }
 
   while (UNPROCESSED && keep_going(ctx, client))
@@ -631,7 +651,8 @@ static ret_t read_stream(sukat_sock_ctx_t *ctx, struct client_ctx *client)
             }
           else if (msg_len_query == 0)
             {
-              if (cache(ctx, client, buf + processed, UNPROCESSED) != true)
+              if (cache(ctx, client, buf + processed, UNPROCESSED, false)
+                  != true)
                 {
                   USE_CB(ctx, client, error_cb, caller_ctx, client_id, ENOMEM);
                   return ERR_FATAL;
@@ -926,7 +947,8 @@ void sukat_sock_destroy(sukat_sock_ctx_t *ctx)
         {
           close(ctx->epoll_fd);
         }
-      free_cache(&ctx->cache);
+      free_cache(&ctx->read_cache);
+      free_cache(&ctx->write_cache);
       free(ctx);
     }
 }
@@ -939,6 +961,148 @@ int sukat_sock_get_epoll_fd(sukat_sock_ctx_t *ctx)
     }
   errno = EINVAL;
   return -1;
+}
+
+/*!
+ * Send any cached data. Should only happen on connection oriented sockets
+ *
+ * @param ctx Main context.
+ * @param client If non-null, client context. If NULL we're using socket in
+ *        main.
+ */
+static enum sukat_sock_send_return
+send_cached(sukat_sock_ctx_t *ctx, struct client_ctx *client)
+{
+  struct rw_cache *cache = (client) ? &client->write_cache : &ctx->write_cache;
+
+  if (cache->data && cache->len)
+    {
+      size_t sent = 0;
+      ssize_t ret;
+      int fd = (client) ? client->fd : ctx->fd;
+
+      do
+        {
+          ret = write(fd, cache->data + sent, cache->len - sent);
+        } while (ret > 0 && (sent  += ret) < cache->len);
+      if (ret_was_ok(ctx, client, ret) != true)
+        {
+          return SUKAT_SEND_ERROR;
+        }
+      if (sent == cache->len)
+        {
+          void *use_ctx = (client) ? (void *)client : (void *)ctx;
+
+          free_cache(cache);
+          /* Stop waiting for EPOLLOUT */
+          if (event_add_to_ctx(ctx, fd, use_ctx,
+                               EPOLL_CTL_MOD, EPOLLIN) != true)
+            {
+              return SUKAT_SEND_ERROR;
+            }
+        }
+      else
+        {
+          /* If we sent 0, we don't need to do anyting, just try again. */
+          if (sent != 0)
+            {
+              size_t left = cache->len - sent;
+              uint8_t *data = (uint8_t *)malloc(left);
+
+              memcpy(data, cache->data + sent, left);
+              free_cache(cache);
+              cache->data = data;
+              cache->len = left;
+            }
+          return SUKAT_SEND_EAGAIN;
+        }
+    }
+  return SUKAT_SEND_OK;
+}
+
+static enum sukat_sock_send_return send_stream_msg(sukat_sock_ctx_t *ctx,
+                                                   struct client_ctx *client,
+                                                   uint8_t *msg, size_t msg_len)
+{
+  ssize_t ret;
+  size_t sent = 0;
+  int fd = (client) ? client->fd : ctx->fd;
+
+  do
+    {
+      ret = write(fd, msg + sent, msg_len - sent);
+    } while (ret > 0 && (sent += ret) < msg_len);
+  if (ret_was_ok(ctx, client, ret) != true)
+    {
+      return SUKAT_SEND_ERROR;
+    }
+  if (cache(ctx, client, msg + sent, msg_len - sent, true) != true)
+    {
+      return SUKAT_SEND_ERROR;
+    }
+
+  return SUKAT_SEND_OK;
+}
+
+static enum sukat_sock_send_return send_dgram_msg(sukat_sock_ctx_t *ctx,
+                                                  struct client_ctx *client,
+                                                  uint8_t *msg, size_t msg_len)
+{
+  //TODO.
+  (void)ctx;
+  (void)client;
+  (void)msg;
+  (void)msg_len;
+  return SUKAT_SEND_ERROR;
+}
+
+static enum sukat_sock_send_return send_seqm_msg(sukat_sock_ctx_t *ctx,
+                                                 struct client_ctx *client,
+                                                 uint8_t *msg, size_t msg_len)
+{
+  //TODO.
+  (void)ctx;
+  (void)client;
+  (void)msg;
+  (void)msg_len;
+  return SUKAT_SEND_ERROR;
+}
+
+enum sukat_sock_send_return sukat_send_msg(sukat_sock_ctx_t *ctx, int id,
+                                           uint8_t *msg, size_t msg_len)
+{
+  enum sukat_sock_send_return ret = SUKAT_SEND_OK;
+  struct client_ctx *client = NULL;
+
+  if (!ctx)
+    {
+      return SUKAT_SEND_ERROR;
+    }
+
+  if (ctx->is_server)
+    {
+      client = (struct client_ctx *)sukat_drawer_find(ctx->client_drawer, &id);
+
+      if (!client)
+        {
+          ERR(ctx, "Could not find client with id %d", id);
+          return SUKAT_SEND_ERROR;
+        }
+    }
+  ret = send_cached(ctx, client);
+  if (ret != SUKAT_SEND_OK)
+    {
+      return ret;
+    }
+  if (socket_connection_oriented(ctx->type))
+    {
+      if (ctx->type == SOCK_STREAM)
+        {
+          return send_stream_msg(ctx, client, msg, msg_len);
+        }
+      return send_seqm_msg(ctx, client, msg, msg_len);
+    }
+  return send_dgram_msg(ctx, client, msg, msg_len);
 }
 
 /*! }@ */
