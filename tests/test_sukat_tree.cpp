@@ -588,7 +588,74 @@ TEST_F(sukat_tree_test_avl, sukat_tree_test_avl_insert_and_remove)
   EXPECT_EQ(tctx.values_size - 1, tctx.values_iter);
   tctx.values_iter = 0;
 
+  // add 8 back
+  node = tree_avl_add(ctx, &remove_key);
+  EXPECT_NE(nullptr, node);
+
+  // Remove 22
+  node = sukat_tree_find(ctx, (void *)&values[7]);
+  EXPECT_NE(nullptr, node);
+  tree_avl_remove(ctx, node);
+
+  /* Should be
+   *        6
+   *       / \
+   *      3   9
+   *     / \  /\
+   *    1  4 8  12
+   */
+  i = 0;
+  tctx.values[i] = 1;
+  tctx.heights[i++] = 0;
+  tctx.values[i] = 4;
+  tctx.heights[i++] = 0;
+  tctx.values[i] = 3;
+  tctx.heights[i++] = 1;
+  tctx.values[i] = 8;
+  tctx.heights[i++] = 0;
+  tctx.values[i] = 12;
+  tctx.heights[i++] = 0;
+  tctx.values[i] = 9;
+  tctx.heights[i++] = 1;
+  tctx.values[i] = 6;
+  tctx.heights[i] = 2;
+
+  tree_binary_depth_first(ctx, test_df_check_cb, &tctx);
+  EXPECT_EQ(tctx.values_size - 1, tctx.values_iter);
+  tctx.values_iter = 0;
+
   free(tctx.values);
   free(tctx.heights);
   memset(&tctx, 0, sizeof(tctx));
+}
+
+TEST_F(sukat_tree_test_avl, sukat_tree_test_avl_large)
+{
+  const size_t n_values = 1024;
+  int *values = (int *)malloc(n_values * sizeof(*values));
+  size_t i;
+
+  ASSERT_NE(nullptr, values);
+  srand(time(0));
+  ctx = tree_avl_create(&default_params, &default_cbs);
+
+  for (i = 0; i < n_values; i++)
+    {
+      tree_node_t *node;
+      do
+        {
+          values[i] = rand();
+          node = tree_avl_add(ctx, &values[i]);
+        } while (node == NULL && errno == EEXIST);
+      EXPECT_NE(nullptr, node);
+    }
+
+   /* Find each node and delete */
+  for (i = 0; i < n_values; i++)
+    {
+      tree_node_t *node = sukat_tree_find(ctx, (void *)&values[i]);
+      EXPECT_NE(nullptr, node);
+      tree_avl_remove(ctx, node);
+    }
+  free(values);
 }

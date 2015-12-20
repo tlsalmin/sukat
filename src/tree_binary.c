@@ -8,6 +8,7 @@
 
 #include <stdlib.h>
 #include <assert.h>
+#include <errno.h>
 #include "sukat_log_internal.h"
 #include "tree_binary.h"
 
@@ -30,6 +31,7 @@ tree_node_t *tree_binary_insert(tree_ctx_t *ctx, void *data)
   if (!ctx || !ctx->cbs.cmp_cb)
     {
       ERR(ctx, "Missing %s.", (ctx) ? "compare function" : "context");
+      errno = EINVAL;
       return NULL;
     }
   if (!ctx->root)
@@ -46,6 +48,7 @@ tree_node_t *tree_binary_insert(tree_ctx_t *ctx, void *data)
           if (cmp_value == 0)
             {
               ERR(ctx, "Data with key already exist");
+              errno = EEXIST;
               return NULL;
             }
 
@@ -57,6 +60,11 @@ tree_node_t *tree_binary_insert(tree_ctx_t *ctx, void *data)
     }
   assert(*parents_ptr == NULL);
   *parents_ptr = (tree_node_t*)calloc(1, sizeof(*ctx->root));
+  if (*parents_ptr == NULL)
+    {
+      ERR(ctx, "Out of memory to add new key: %s", strerror(errno));
+      return NULL;
+    }
   (*parents_ptr)->data = data;
   (*parents_ptr)->parent = parent;
 
@@ -179,7 +187,7 @@ void tree_binary_rotate_right(tree_ctx_t *tree, tree_node_t *node)
 }
 
 tree_node_t *tree_binary_find(tree_ctx_t *ctx,
-                                    tree_node_t *node, void *key)
+                              tree_node_t *node, void *key)
 {
   if (node)
     {
@@ -234,7 +242,7 @@ void tree_binary_node_free(tree_ctx_t *ctx, tree_node_t *node)
 {
   if (ctx->cbs.destroy_cb && !node->removed)
     {
-      ctx->cbs.destroy_cb(tree_binary_node_data(node));
+      ctx->cbs.destroy_cb(ctx->params.destroy_ctx, tree_binary_node_data(node));
     }
   free(node);
 }
@@ -251,9 +259,12 @@ static bool node_df_cb(sukat_drawer_node_t *dnode, void *caller_data)
 void tree_binary_destroy(tree_ctx_t *ctx)
 {
   DBG(ctx, "Destroying tree %p", ctx);
-  ctx->destroyed = true;
-  tree_binary_depth_first(ctx, node_df_cb, ctx);
-  free(ctx);
+  if (ctx)
+    {
+      ctx->destroyed = true;
+      tree_binary_depth_first(ctx, node_df_cb, ctx);
+      free(ctx);
+    }
 }
 
 /*! }@ */

@@ -41,9 +41,10 @@ typedef int (*sukat_drawer_cmp_cb)(void *n1, void *n2, bool find);
 /*!
  * Optional callback called each time a node is removed from the tree.
  *
+ * @param ctx   Context specified in params.
  * @param node  Node being removed. This can be free'd.
  */
-typedef void (*sukat_drawer_destroy_cb)(void *node);
+typedef void (*sukat_drawer_destroy_cb)(void *ctx, void *node);
 
 enum sukat_drawer_type
 {
@@ -56,6 +57,7 @@ enum sukat_drawer_type
 struct sukat_drawer_params
 {
   enum sukat_drawer_type type;
+  void *destroy_ctx; //!< Context passed to destroy
 };
 
 struct sukat_drawer_cbs

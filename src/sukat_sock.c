@@ -74,6 +74,48 @@ struct sukat_sock_ctx
   struct rw_cache cache;
 };
 
+static void enter_cb(sukat_sock_ctx_t *ctx, struct client_ctx *client)
+{
+  ctx->in_callback = true;
+  if (client)
+    {
+      client->in_callback = true;
+    }
+}
+
+static void leave_cb(sukat_sock_ctx_t *ctx, struct client_ctx *client)
+{
+  ctx->in_callback = false;
+  if (client)
+    {
+      client->in_callback = false;
+    }
+}
+
+#define USE_CB(_ctx, _client, _cb, ...)                                       \
+  do                                                                          \
+    {                                                                         \
+      if (_ctx && _ctx->cbs._cb)                                              \
+        {                                                                     \
+          enter_cb(_ctx, _client);                                            \
+          _ctx->cbs._cb(__VA_ARGS__);                                         \
+          leave_cb(_ctx, _client);                                            \
+        }                                                                     \
+    }                                                                         \
+  while (0)
+
+#define USE_CB_WRET(_ctx, _client, _ret, _cb, ...)                            \
+  do                                                                          \
+    {                                                                         \
+      if (_ctx && _ctx->cbs._cb)                                              \
+        {                                                                     \
+          enter_cb(_ctx, _client);                                            \
+          _ret = _ctx->cbs._cb(__VA_ARGS__);                                  \
+          leave_cb(_ctx, _client);                                            \
+        }                                                                     \
+    }                                                                         \
+  while (0)
+
 static bool socket_connection_oriented(int type)
 {
   if (type == SOCK_DGRAM || type == SOCK_RDM)
@@ -217,20 +259,6 @@ static void uncache(sukat_sock_ctx_t *ctx, struct client_ctx *client,
   else
     {
       uncache_from(&ctx->cache, buf, uncached);
-    }
-}
-
-static void enter_cb(sukat_sock_ctx_t *ctx)
-{
-  ctx->in_callback = true;
-}
-
-static void leave_cb(sukat_sock_ctx_t *ctx)
-{
-  ctx->in_callback = false;
-  if (ctx->destroyed)
-    {
-      sukat_sock_destroy(ctx);
     }
 }
 
@@ -452,9 +480,9 @@ static void client_close(sukat_sock_ctx_t *ctx, struct client_ctx *client)
   event_ctl(ctx->epoll_fd, client->fd, NULL, EPOLL_CTL_DEL, events);
   free_cache(&client->cache);
   close(client->fd);
-  if (!client->destroyed && ctx->cbs.conn_cb)
+  if (!client->destroyed)
     {
-      ctx->cbs.conn_cb(caller_ctx, ctx->fd, NULL, 0, true);
+      USE_CB(ctx, client, conn_cb, caller_ctx, ctx->fd, NULL, 0, true);
     }
   ctx->n_connections--;
   free(client);
@@ -469,26 +497,27 @@ static void server_accept_cb(sukat_sock_ctx_t *ctx)
   fd = accept(ctx->fd, (struct sockaddr *)&saddr, &slen);
   if (fd >= 0)
     {
-      struct client_ctx *client =
-        (struct client_ctx *)calloc(1, sizeof(*client));
-
-      if (client)
+      if (set_flags(ctx, fd) == true)
         {
-          client->fd = fd;
-          client->main_ctx = ctx;
+          struct client_ctx *client =
+            (struct client_ctx *)calloc(1, sizeof(*client));
 
-          if (event_add_to_ctx(ctx, fd, client, EPOLL_CTL_ADD, EPOLLIN) == true)
+          if (client)
             {
-              LOG(ctx, "New client with fd %d", fd);
-              if (ctx->cbs.conn_cb)
+              client->fd = fd;
+              client->main_ctx = ctx;
+
+              if (event_add_to_ctx(ctx, fd, client, EPOLL_CTL_ADD,
+                                   EPOLLIN) == true)
                 {
-                  client->client_caller_ctx =
-                    ctx->cbs.conn_cb(ctx->caller_ctx, fd, &saddr, slen, false);
+                  LOG(ctx, "New client with fd %d", fd);
+                  USE_CB_WRET(ctx, client, client->client_caller_ctx, conn_cb,
+                              ctx->caller_ctx, fd, &saddr, slen, false);
+                  ctx->n_connections++;
+                  return;
                 }
-              ctx->n_connections++;
-              return;
+              free(client);
             }
-          free(client);
         }
       close(fd);
     }
@@ -528,10 +557,7 @@ static bool client_continue_connect(sukat_sock_ctx_t *ctx)
       else
         {
           ERR(ctx, "Connect continuing failed: %s", strerror(errno));
-          if (ctx->cbs.error_cb)
-            {
-              ctx->cbs.error_cb(ctx->caller_ctx, 0, errno);
-            }
+          USE_CB(ctx, NULL, error_cb, ctx->caller_ctx, 0, errno);
         }
       return false;
     }
@@ -585,10 +611,7 @@ static ret_t read_stream(sukat_sock_ctx_t *ctx, struct client_ctx *client)
         {
           ERR(ctx, "Connection %s%s", (read_now == 0) ? "closed" :
               "severed: ", (read_now == -1) ? strerror(errno) : "");
-          if (ctx->cbs.error_cb)
-            {
-              ctx->cbs.error_cb(caller_ctx, client_id, errno);
-            }
+          USE_CB(ctx, client, error_cb, caller_ctx, client_id, errno);
           return ERR_FATAL;
         }
     }
@@ -610,10 +633,7 @@ static ret_t read_stream(sukat_sock_ctx_t *ctx, struct client_ctx *client)
             {
               if (cache(ctx, client, buf + processed, UNPROCESSED) != true)
                 {
-                  if (ctx->cbs.error_cb)
-                    {
-                      ctx->cbs.error_cb(caller_ctx, client_id, ENOMEM);
-                    }
+                  USE_CB(ctx, client, error_cb, caller_ctx, client_id, ENOMEM);
                   return ERR_FATAL;
                 }
               return ERR_OK;
@@ -625,10 +645,8 @@ static ret_t read_stream(sukat_sock_ctx_t *ctx, struct client_ctx *client)
           ERR(ctx, "Stream oriented without a msg_len_cb not implemented");
           return ERR_FATAL;
         }
-      if (ctx->cbs.msg_cb)
-        {
-          ctx->cbs.msg_cb(caller_ctx, client_id, buf + processed, msg_len);
-        }
+      USE_CB(ctx, client, msg_cb,
+             caller_ctx, client_id, buf + processed, msg_len);
       processed += msg_len;
     }
 
@@ -671,17 +689,13 @@ static void event_non_epollin(sukat_sock_ctx_t *ctx,
                               struct client_ctx *client, uint32_t events)
 {
   void *caller_ctx = get_caller_ctx(ctx, client);
+  int errval = (events & EPOLLIN) ? ECONNABORTED :
+    ECONNRESET;
 
   ERR(ctx, "%s event received from %s connection",
       (events == EPOLLERR) ? "Error" : "Disconnect",
       (client) ? "client" : "main");
-  if (ctx->cbs.error_cb)
-    {
-      int errval = (events & EPOLLIN) ? ECONNABORTED :
-        ECONNRESET;
-
-      ctx->cbs.error_cb(caller_ctx, -1, errval);
-    }
+  USE_CB(ctx, client, error_cb, caller_ctx, -1, errval);
 }
 
 static ret_t event_handle(sukat_sock_ctx_t *ctx, struct epoll_event *event)
@@ -753,7 +767,6 @@ int sukat_sock_read(sukat_sock_ctx_t *ctx, int epoll_fd,
       errno = EINVAL;
       return -1;
     }
-  enter_cb(ctx);
   do
     {
       struct epoll_event new_events[(ctx->n_connections < 128) ?
@@ -784,8 +797,23 @@ int sukat_sock_read(sukat_sock_ctx_t *ctx, int epoll_fd,
     } while (nfds > 0 && ctx->destroyed != true && ctx->n_connections > 0);
 
 out:
-  leave_cb(ctx);
+  if (ctx->destroyed)
+    {
+      sukat_sock_destroy(ctx);
+    }
   return (int)ret;
+}
+
+int fd_cmp_cb(void *n1, void *n2, __attribute__((unused))bool find)
+{
+  int fd1 = *(int *)n1, fd2 = *(int *)n2;
+
+  return fd1 - fd2;
+}
+
+void fd_destroy_cb(void *ctx, void *node)
+{
+  client_close((sukat_sock_ctx_t *)ctx, (struct client_ctx *)node);
 }
 
 sukat_sock_ctx_t *sukat_sock_create(struct sukat_sock_params *params,
@@ -841,6 +869,24 @@ sukat_sock_ctx_t *sukat_sock_create(struct sukat_sock_params *params,
     {
       goto fail;
     }
+  if (ctx->is_server)
+    {
+      struct sukat_drawer_cbs dcbs =
+        {
+          .log_cb = (cbs) ? cbs->log_cb : NULL,
+          .cmp_cb = fd_cmp_cb,
+        };
+      struct sukat_drawer_params dparams =
+        {
+          .type = SUKAT_DRAWER_TREE_AVL
+        };
+
+      ctx->client_drawer = sukat_drawer_create(&dparams, &dcbs);
+      if (!ctx->client_drawer)
+        {
+          goto fail;
+        }
+    }
 
   return ctx;
 
@@ -862,6 +908,7 @@ void sukat_sock_destroy(sukat_sock_ctx_t *ctx)
       if (ctx->fd >= 0)
         {
           close(ctx->fd);
+          ctx->n_connections--;
         }
       if (ctx->master_epoll_fd != -1)
         {
@@ -874,7 +921,6 @@ void sukat_sock_destroy(sukat_sock_ctx_t *ctx)
       if (ctx->client_drawer)
         {
           sukat_drawer_destroy(ctx->client_drawer);
-          // TODO: destroy stuff in da drawer.
         }
       if (ctx->epoll_fd > 0)
         {
