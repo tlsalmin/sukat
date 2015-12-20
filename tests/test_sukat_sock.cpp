@@ -90,7 +90,7 @@ protected:
       return false;
     }
 
-  bool wait_for_tipc_server(sukat_sock_ctx_t *ctx, uint32_t name_type,
+  bool wait_for_tipc_server(sukat_sock_t *ctx, uint32_t name_type,
                             uint32_t name_instance, int wait)
     {
       struct sockaddr_tipc topsrv = { };
@@ -154,7 +154,7 @@ struct test_ctx
 
 TEST_F(sukat_sock_test_tipc, sukat_sock_test_tipc)
 {
-  sukat_sock_ctx_t *ctx, *client_ctx;
+  sukat_sock_t *ctx, *client_ctx;
   struct test_ctx tctx = { };
   bool bret;
   int err;
@@ -289,7 +289,7 @@ void *new_conn_cb(void *ctx, int id, struct sockaddr_storage *sockaddr,
 
 TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_connect)
 {
-  sukat_sock_ctx_t *ctx, *client_ctx;
+  sukat_sock_t *ctx, *client_ctx;
   struct sun_test_ctx tctx = { };
   int err;
 
@@ -298,11 +298,11 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_connect)
   default_cbs.conn_cb = new_conn_cb;
 
   ctx = sukat_sock_create(&default_params, &default_cbs);
-  ASSERT_TRUE(ctx != NULL);
+  ASSERT_NE(nullptr, ctx);
 
   default_params.server = false;
   client_ctx = sukat_sock_create(&default_params, &default_cbs);
-  ASSERT_TRUE(ctx != NULL);
+  ASSERT_NE(nullptr, ctx);
 
   tctx.connected_should = true;
   err = sukat_sock_read(ctx, sukat_sock_get_epoll_fd(ctx), 0, 0);
@@ -323,13 +323,13 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_connect)
     {
       size_t i;
       const size_t n_clients = SOMAXCONN;
-      sukat_sock_ctx_t *clients[n_clients];
+      sukat_sock_t *clients[n_clients];
       tctx.n_connects = tctx.n_disconnects = 0;
 
       for (i = 0; i < n_clients; i++)
         {
           clients[i] = sukat_sock_create(&default_params, &default_cbs);
-          EXPECT_TRUE(clients[i] != NULL);
+          EXPECT_NE(nullptr, clients[i]);
         }
       tctx.connected_should = true;
       err = sukat_sock_read(ctx, sukat_sock_get_epoll_fd(ctx), 0, 0);
@@ -370,7 +370,7 @@ int len_cb(void *ctx, __attribute__((unused))uint8_t *buf,
 {
   struct read_ctx *tctx = (struct read_ctx*)ctx;
 
-  EXPECT_TRUE(tctx != NULL);
+  EXPECT_NE(nullptr, tctx);
   if (tctx->check_buf_len)
     {
       EXPECT_LT(tctx->buf_len_size, tctx->buf_len_iter);
@@ -382,17 +382,17 @@ int len_cb(void *ctx, __attribute__((unused))uint8_t *buf,
 
 TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_read)
 {
-  sukat_sock_ctx_t *ctx, *client_ctx;
+  sukat_sock_t *ctx, *client_ctx;
 
   default_cbs.msg_len_cb = len_cb;
   default_params.server = true;
 
   ctx = sukat_sock_create(&default_params, &default_cbs);
-  ASSERT_TRUE(ctx != NULL);
+  ASSERT_NE(nullptr, ctx);
 
   default_params.server = false;
   client_ctx = sukat_sock_create(&default_params, &default_cbs);
-  ASSERT_TRUE(ctx != NULL);
+  ASSERT_NE(nullptr, ctx);
 
   sukat_sock_destroy(client_ctx);
   sukat_sock_destroy(ctx);

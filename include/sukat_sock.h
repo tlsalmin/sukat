@@ -147,7 +147,8 @@ struct sukat_sock_cbs
   sukat_sock_error_cb error_cb;
 };
 
-typedef struct sukat_sock_ctx sukat_sock_ctx_t;
+typedef struct sukat_sock_ctx sukat_sock_t;
+typedef struct sukat_sock_client_ctx sukat_sock_client_t;
 
 /*!
  * Create function for a socket.
@@ -159,10 +160,10 @@ typedef struct sukat_sock_ctx sukat_sock_ctx_t;
  * @return != NULL      Sukat context, which should be passed to all later sukat
  *                      API calls
  */
-sukat_sock_ctx_t *sukat_sock_create(struct sukat_sock_params *params,
+sukat_sock_t *sukat_sock_create(struct sukat_sock_params *params,
                                     struct sukat_sock_cbs *cbs);
 
-int sukat_sock_read(sukat_sock_ctx_t *ctx, int epoll_fd,
+int sukat_sock_read(sukat_sock_t *ctx, int epoll_fd,
                     uint32_t events, int timeout);
 
 /*!
@@ -173,14 +174,14 @@ int sukat_sock_read(sukat_sock_ctx_t *ctx, int epoll_fd,
  * @return >= 0 Sukat API slave epoll fd.
  * @return -1   Error. errno set appropriately.
  */
-int sukat_sock_get_epoll_fd(sukat_sock_ctx_t *ctx);
+int sukat_sock_get_epoll_fd(sukat_sock_t *ctx);
 
 /*!
  * Destroyes all sockets and data associated with \p ctx
  *
  * @param ctx   Sukat API context.
  */
-void sukat_sock_destroy(sukat_sock_ctx_t *ctx);
+void sukat_sock_destroy(sukat_sock_t *ctx);
 
 /*!
  * Different possible return values for sukat API send calls.
@@ -206,7 +207,7 @@ enum sukat_sock_send_return
  *
  * @return ::sukat_sock_send_return
  */
-enum sukat_sock_send_return sukat_send_msg(sukat_sock_ctx_t *ctx, int id,
+enum sukat_sock_send_return sukat_send_msg(sukat_sock_t *ctx, int id,
                                            uint8_t *msg, size_t msg_len);
 
 #endif /* SUKAT_SOCK_H */
