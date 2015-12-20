@@ -1,3 +1,11 @@
+/*!
+ * @file sukat_log_internal.c
+ * @brief Log functions.
+ *
+ * @addtogroup sukat_log
+ * @{
+ */
+
 #include "sukat_log_internal.h"
 
 void sukat_do_log(sukat_log_cb log_cb, enum sukat_log_lvl lvl, const char *func,
@@ -19,3 +27,5 @@ void sukat_do_log(sukat_log_cb log_cb, enum sukat_log_lvl lvl, const char *func,
     }
 #undef LEFT
 }
+
+/*! }@ */

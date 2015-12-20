@@ -1,5 +1,5 @@
 /*!
- * @file binary_tree.c
+ * @file tree_binary.c
  * @brief Binary tree implementation.
  *
  * @addtogroup tree_binary

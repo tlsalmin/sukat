@@ -1,8 +1,8 @@
 /*!
- * @file sukat.c
+ * @file sukat_sock.c
  * @brief Implentation of sukat socket API.
  *
- * @addtogroup sukat_api
+ * @addtogroup sukat_sock
  * @{
  */
 
@@ -182,7 +182,7 @@ static char *socket_log(sukat_sock_t *ctx, struct sukat_sock_params *params,
               (params) ? params->pinet.port : "TODO");
       break;
     default:
-      SAFEPUT("Unknown %d", params->domain);
+      SAFEPUT("Unknown %d", domain);
       break;
     }
 

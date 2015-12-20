@@ -49,6 +49,7 @@ sukat_event_ctx_t *sukat_event_create(struct sukat_event_params *params,
   if (ctx->epoll_fd < 0)
     {
       ERR(ctx, "Failed to create epoll instance: %s", strerror(errno));
+      free(ctx);
       return NULL;
     }
   DBG(ctx, "Created event context %p", ctx);

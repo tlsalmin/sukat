@@ -1,5 +1,5 @@
 /*!
- * @file binary_tree.h
+ * @file tree_binary.h
  * @brief Binary tree function declarations.
  *
  * @defgroup tree_binary

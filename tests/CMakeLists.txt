@@ -6,6 +6,8 @@ add_executable(test_sock test_sukat_sock.cpp)
 
 option(coverage "Calculate test coverage." OFF)
 if (coverage)
+  # Grabbed from
+  # http://stackoverflow.com/questions/13116488/detailed-guide-on-using-gcov-with-cmake-cdash
   set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/CMakeModules)
   include(CodeCoverage)
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g -fprofile-arcs -ftest-coverage")
