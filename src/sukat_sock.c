@@ -42,7 +42,6 @@ struct sukat_sock_client_ctx
   bool in_callback; //!< If true, don't delete this immediately as we might
   bool destroyed; //!< If true, destroy on first chance.
   bool waiting_on_write; //!< If true EPOLLOUT is set
-  sukat_drawer_node_t *node;
   struct rw_cache read_cache;
   struct rw_cache write_cache;
 };
@@ -60,9 +59,6 @@ struct sukat_sock_ctx
   struct sukat_sock_cbs cbs;
   int fd; //!< Main fd for accept to server or connected fd for client.
   void *caller_ctx; //!< If true, dont delete immediately.
-  sukat_drawer_t *client_drawer; //!< Drawer of active clients sorted by fd.
-  sukat_drawer_t *removed_drawer; /*!< Drawer collected during callbacks where
-                                       clients were destroyd */
   bool connect_in_progress; //! If set, a connect returned EINPROCESS
   bool is_server; //!< True for server operation.
   bool in_callback; //!< If true, don't destroy oneself immediately.
@@ -236,8 +232,8 @@ static bool cache(sukat_sock_t *ctx, sukat_sock_client_t *client,
     }
   if (ret == false)
     {
-      ERR(ctx, "Cannot cache %s data: %s", (write) ? "write" : "read",
-          strerror(errno));
+      ERR(ctx, "Cannot cache %zu bytes for %s data: %s", buf_amount,
+          (write) ? "write" : "read", strerror(errno));
     }
   return ret;
 }
@@ -489,7 +485,7 @@ static void client_close(sukat_sock_t *ctx, sukat_sock_client_t *client)
   close(client->fd);
   if (!client->destroyed)
     {
-      USE_CB(ctx, client, conn_cb, caller_ctx, ctx->fd, NULL, 0, true);
+      USE_CB(ctx, client, conn_cb, caller_ctx, client, NULL, 0, true);
     }
   ctx->n_connections--;
   free(client);
@@ -519,7 +515,7 @@ static void server_accept_cb(sukat_sock_t *ctx)
                 {
                   LOG(ctx, "New client with fd %d", fd);
                   USE_CB_WRET(ctx, client, client->client_caller_ctx, conn_cb,
-                              ctx->caller_ctx, fd, &saddr, slen, false);
+                              ctx->caller_ctx, client, &saddr, slen, false);
                   ctx->n_connections++;
                   return;
                 }
@@ -625,6 +621,8 @@ static ret_t read_stream(sukat_sock_t *ctx, sukat_sock_client_t *client)
   void *caller_ctx = get_caller_ctx(ctx, client);
   int client_id = (client) ? client->fd : 0;
 
+  DBG(ctx, "Reading from %s", (client) ? "client" : "server");
+
   uncache(ctx, client, buf, &n_read, false);
 
   do
@@ -635,6 +633,8 @@ static ret_t read_stream(sukat_sock_t *ctx, sukat_sock_client_t *client)
     {
       return ERR_FATAL;
     }
+
+  DBG(ctx, "Read %zu bytes from %s", n_read, (client) ? "client" : "server");
 
   while (UNPROCESSED && keep_going(ctx, client))
     {
@@ -649,7 +649,8 @@ static ret_t read_stream(sukat_sock_t *ctx, sukat_sock_client_t *client)
               ERR(ctx, "Corruption detected by caller");
               return ERR_FATAL;
             }
-          else if (msg_len_query == 0)
+          msg_len = (size_t)msg_len_query;
+          if (msg_len == 0 || msg_len > UNPROCESSED)
             {
               if (cache(ctx, client, buf + processed, UNPROCESSED, false)
                   != true)
@@ -659,7 +660,6 @@ static ret_t read_stream(sukat_sock_t *ctx, sukat_sock_client_t *client)
                 }
               return ERR_OK;
             }
-          msg_len = (size_t)msg_len_query;
         }
       else
         {
@@ -667,7 +667,7 @@ static ret_t read_stream(sukat_sock_t *ctx, sukat_sock_client_t *client)
           return ERR_FATAL;
         }
       USE_CB(ctx, client, msg_cb,
-             caller_ctx, client_id, buf + processed, msg_len);
+             caller_ctx, client, buf + processed, msg_len);
       processed += msg_len;
     }
 
@@ -825,18 +825,6 @@ out:
   return (int)ret;
 }
 
-int fd_cmp_cb(void *n1, void *n2, __attribute__((unused))bool find)
-{
-  int fd1 = *(int *)n1, fd2 = *(int *)n2;
-
-  return fd1 - fd2;
-}
-
-void fd_destroy_cb(void *ctx, void *node)
-{
-  client_close((sukat_sock_t *)ctx, (sukat_sock_client_t *)node);
-}
-
 sukat_sock_t *sukat_sock_create(struct sukat_sock_params *params,
                                     struct sukat_sock_cbs *cbs)
 {
@@ -890,25 +878,6 @@ sukat_sock_t *sukat_sock_create(struct sukat_sock_params *params,
     {
       goto fail;
     }
-  if (ctx->is_server)
-    {
-      struct sukat_drawer_cbs dcbs =
-        {
-          .log_cb = (cbs) ? cbs->log_cb : NULL,
-          .cmp_cb = fd_cmp_cb,
-          .destroy_cb = fd_destroy_cb,
-        };
-      struct sukat_drawer_params dparams =
-        {
-          .type = SUKAT_DRAWER_TREE_AVL
-        };
-
-      ctx->client_drawer = sukat_drawer_create(&dparams, &dcbs);
-      if (!ctx->client_drawer)
-        {
-          goto fail;
-        }
-    }
 
   return ctx;
 
@@ -939,10 +908,6 @@ void sukat_sock_destroy(sukat_sock_t *ctx)
               ERR(ctx, "Failed to remove epoll_fd from master fd: %s",
                   strerror(errno));
           }
-        }
-      if (ctx->client_drawer)
-        {
-          sukat_drawer_destroy(ctx->client_drawer);
         }
       if (ctx->epoll_fd > 0)
         {
@@ -982,6 +947,9 @@ send_cached(sukat_sock_t *ctx, sukat_sock_client_t *client)
       ssize_t ret;
       int fd = (client) ? client->fd : ctx->fd;
 
+      DBG(ctx, "Finishing send of %zu bytes to %s.", cache->len,
+          (client) ? "client" :"server");
+
       do
         {
           ret = write(fd, cache->data + sent, cache->len - sent);
@@ -1009,7 +977,13 @@ send_cached(sukat_sock_t *ctx, sukat_sock_client_t *client)
             {
               size_t left = cache->len - sent;
               uint8_t *data = (uint8_t *)malloc(left);
+              DBG(ctx, "Still missing %zu bytes to send", left);
 
+              if (!data)
+                {
+                  ERR(ctx, "Could not cache data for sending: %s", strerror);
+                  return SUKAT_SEND_ERROR;
+                }
               memcpy(data, cache->data + sent, left);
               free_cache(cache);
               cache->data = data;
@@ -1029,6 +1003,9 @@ static enum sukat_sock_send_return send_stream_msg(sukat_sock_t *ctx,
   size_t sent = 0;
   int fd = (client) ? client->fd : ctx->fd;
 
+  DBG(ctx, "Sending %zu bytes of stream to %s", msg_len,
+      (client) ? "client" : "server");
+
   do
     {
       ret = write(fd, msg + sent, msg_len - sent);
@@ -1036,6 +1013,11 @@ static enum sukat_sock_send_return send_stream_msg(sukat_sock_t *ctx,
   if (ret_was_ok(ctx, client, ret) != true)
     {
       return SUKAT_SEND_ERROR;
+    }
+  /* If we cant send a single byte, just return EAGAIN */
+  if (sent == 0)
+    {
+      return SUKAT_SEND_EAGAIN;
     }
   if (cache(ctx, client, msg + sent, msg_len - sent, true) != true)
     {
@@ -1069,27 +1051,17 @@ static enum sukat_sock_send_return send_seqm_msg(sukat_sock_t *ctx,
   return SUKAT_SEND_ERROR;
 }
 
-enum sukat_sock_send_return sukat_send_msg(sukat_sock_t *ctx, int id,
+enum sukat_sock_send_return sukat_send_msg(sukat_sock_t *ctx,
+                                           sukat_sock_client_t *client,
                                            uint8_t *msg, size_t msg_len)
 {
   enum sukat_sock_send_return ret = SUKAT_SEND_OK;
-  sukat_sock_client_t *client = NULL;
 
   if (!ctx)
     {
       return SUKAT_SEND_ERROR;
     }
 
-  if (ctx->is_server)
-    {
-      client = (sukat_sock_client_t *)sukat_drawer_find(ctx->client_drawer, &id);
-
-      if (!client)
-        {
-          ERR(ctx, "Could not find client with id %d", id);
-          return SUKAT_SEND_ERROR;
-        }
-    }
   ret = send_cached(ctx, client);
   if (ret != SUKAT_SEND_OK)
     {
@@ -1104,6 +1076,15 @@ enum sukat_sock_send_return sukat_send_msg(sukat_sock_t *ctx, int id,
       return send_seqm_msg(ctx, client, msg, msg_len);
     }
   return send_dgram_msg(ctx, client, msg, msg_len);
+}
+
+void sukat_sock_disconnect(sukat_sock_t *ctx, sukat_sock_client_t *client)
+{
+  if (ctx != NULL && client != NULL)
+    {
+      client->destroyed = true;
+      client_close(ctx, client);
+    }
 }
 
 /*! }@ */

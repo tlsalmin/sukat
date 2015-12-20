@@ -250,8 +250,7 @@ struct sun_test_ctx
   bool connected_should;
   bool connected_visited;
   bool connected_should_disconnect;
-  bool id_match;
-  int id;
+  sukat_sock_client_t *newest_client;
   void *new_ctx;
   size_t n_connects;
   size_t n_disconnects;
@@ -262,7 +261,8 @@ struct test_client
   int id;
 };
 
-void *new_conn_cb(void *ctx, int id, struct sockaddr_storage *sockaddr,
+void *new_conn_cb(void *ctx, sukat_sock_client_t *client,
+                  struct sockaddr_storage *sockaddr,
                   size_t sock_len, bool disconnect)
 {
   struct sun_test_ctx *tctx = (struct sun_test_ctx *)ctx;
@@ -277,10 +277,7 @@ void *new_conn_cb(void *ctx, int id, struct sockaddr_storage *sockaddr,
     {
       tctx->n_connects++;
     }
-  if (tctx->id_match)
-    {
-      EXPECT_EQ(tctx->id, id);
-    }
+  tctx->newest_client = client;
   (void)sockaddr;
   (void)sock_len;
   tctx->connected_visited = true;
@@ -354,46 +351,211 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_connect)
 
 struct read_ctx
 {
-  int *returns;
-  size_t return_size;
-  size_t return_iter;
   bool len_cb_should_visit;
   bool len_cb_visited;
-  bool check_buf_len;
-  size_t *buf_lens;
-  size_t buf_len_size;
-  size_t buf_len_iter;
+  bool return_corrupt;
+  sukat_sock_client_t *newest_client;
+  bool should_disconnect;
+  bool msg_cb_should_visit;
+  bool msg_cb_visited;
+  uint8_t *buf;
+  size_t offset;
+  size_t n_messages;
 };
 
-int len_cb(void *ctx, __attribute__((unused))uint8_t *buf,
-           size_t buf_len)
+#pragma pack (1)
+struct test_msg
+{
+  uint64_t type;
+  uint64_t len;
+  uint8_t data[];
+};
+#pragma pack (0)
+
+static int len_cb(void *ctx, __attribute__((unused))uint8_t *buf,
+                  size_t buf_len)
 {
   struct read_ctx *tctx = (struct read_ctx*)ctx;
+  struct test_msg *msg = (struct test_msg *)buf;
 
+  EXPECT_NE(nullptr, buf);
   EXPECT_NE(nullptr, tctx);
-  if (tctx->check_buf_len)
+  tctx->len_cb_visited = true;
+  if (tctx->return_corrupt == true)
     {
-      EXPECT_LT(tctx->buf_len_size, tctx->buf_len_iter);
-      EXPECT_EQ(tctx->buf_lens[tctx->buf_len_iter++], buf_len);
+      return -1;
     }
-  EXPECT_LT(tctx->return_size, tctx->return_iter);
-  return tctx->returns[tctx->return_iter++];
+  if (buf_len < sizeof(*msg))
+    {
+      return 0;
+    }
+  return msg->len;
+}
+
+static void msg_cb(void *ctx, sukat_sock_client_t *client, uint8_t *buf,
+                   size_t buf_len)
+{
+  struct read_ctx *tctx = (struct read_ctx*)ctx;
+  int compareval;
+
+  tctx->msg_cb_visited = true;
+  tctx->newest_client = client;
+  compareval = memcmp(buf, tctx->buf + tctx->offset, buf_len);
+  EXPECT_EQ(0, compareval);
+  tctx->offset += buf_len;
+  tctx->n_messages++;
+}
+
+void *new_conn_cb_for_read(void *ctx, sukat_sock_client_t *client,
+  __attribute__((unused))struct sockaddr_storage *sockaddr,
+  __attribute__((unused))size_t sock_len, bool disconnect)
+{
+  struct read_ctx *tctx = (struct read_ctx *)ctx;
+  tctx->newest_client = client;
+  EXPECT_EQ(tctx->should_disconnect, disconnect);
+  return NULL;
 }
 
 TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_read)
 {
   sukat_sock_t *ctx, *client_ctx;
+  sukat_sock_client_t *client;
+  uint8_t buf[BUFSIZ];
+  struct test_msg *msg = (struct test_msg *)buf;
+  struct read_ctx tctx = { };
+  int err;
+  enum sukat_sock_send_return send_ret;
+  size_t msg_len = 5000, i;
 
   default_cbs.msg_len_cb = len_cb;
+  default_cbs.conn_cb = new_conn_cb_for_read;
+  default_cbs.msg_cb = msg_cb;
   default_params.server = true;
+  default_params.caller_ctx = (void *)&tctx;
+  tctx.buf = buf;
 
   ctx = sukat_sock_create(&default_params, &default_cbs);
   ASSERT_NE(nullptr, ctx);
 
   default_params.server = false;
   client_ctx = sukat_sock_create(&default_params, &default_cbs);
-  ASSERT_NE(nullptr, ctx);
+  ASSERT_NE(nullptr, client_ctx);
 
+  err = sukat_sock_read(ctx, sukat_sock_get_epoll_fd(ctx), EPOLLIN, 0);
+  EXPECT_EQ(0, err);
+  EXPECT_EQ(2, ctx->n_connections);
+  client = tctx.newest_client;
+
+  /* Simple single message */
+  msg->type = 0;
+  msg->len = sizeof(*msg);
+
+  send_ret = sukat_send_msg(client_ctx, NULL, buf, msg->len);
+  EXPECT_EQ(SUKAT_SEND_OK, send_ret);
+
+  tctx.len_cb_should_visit = tctx.msg_cb_should_visit = true;
+  err = sukat_sock_read(ctx, sukat_sock_get_epoll_fd(ctx), EPOLLIN, 0);
+  EXPECT_EQ(0, err);
+  EXPECT_EQ(true, tctx.len_cb_visited);
+  EXPECT_EQ(true, tctx.msg_cb_visited);
+  tctx.offset = 0;
+
+  /* Reply */
+  err = sukat_send_msg(ctx, client, buf, msg->len);
+  EXPECT_EQ(SUKAT_SEND_OK, send_ret);
+
+  tctx.len_cb_visited = tctx.msg_cb_visited = false;
+  err = sukat_sock_read(client_ctx, sukat_sock_get_epoll_fd(client_ctx),
+                        EPOLLIN, 0);
+  EXPECT_EQ(0, err);
+  EXPECT_EQ(true, tctx.len_cb_visited);
+  EXPECT_EQ(true, tctx.msg_cb_visited);
+  tctx.offset = 0;
+
+  /* Message that needs caching */
+  tctx.len_cb_should_visit = true;
+  tctx.msg_cb_should_visit = false;
+  tctx.len_cb_visited = tctx.msg_cb_visited = false;
+
+  send_ret = sukat_send_msg(ctx, client, buf, sizeof(*msg) / 2);
+  EXPECT_EQ(SUKAT_SEND_OK, send_ret);
+
+  err = sukat_sock_read(client_ctx, sukat_sock_get_epoll_fd(client_ctx),
+                        EPOLLIN, 0);
+  EXPECT_EQ(0, err);
+  EXPECT_EQ(true, tctx.len_cb_visited);
+  EXPECT_EQ(false, tctx.msg_cb_visited);
+  tctx.offset = 0;
+
+  /* Continue */
+  send_ret = sukat_send_msg(ctx, client, buf + (sizeof(*msg) / 2),
+                            sizeof(*msg) / 2);
+  EXPECT_EQ(SUKAT_SEND_OK, send_ret);
+
+  tctx.msg_cb_should_visit = true;
+  err = sukat_sock_read(client_ctx, sukat_sock_get_epoll_fd(client_ctx),
+                        EPOLLIN, 0);
+  EXPECT_EQ(0, err);
+  EXPECT_EQ(true, tctx.len_cb_visited);
+  EXPECT_EQ(true, tctx.msg_cb_visited);
+  tctx.len_cb_visited = tctx.msg_cb_visited = false;
+  tctx.offset = 0;
+
+  /* Longer message */
+  memset(buf, 'c', msg_len);
+  msg->len = msg_len;
+  msg->type = 0;
+
+  /* Send first half */
+  send_ret = sukat_send_msg(ctx, client, buf, msg_len / 2);
+  EXPECT_EQ(SUKAT_SEND_OK, send_ret);
+
+  tctx.msg_cb_should_visit = false;
+  err = sukat_sock_read(client_ctx, sukat_sock_get_epoll_fd(client_ctx),
+                        EPOLLIN, 0);
+  EXPECT_EQ(0, err);
+  EXPECT_EQ(true, tctx.len_cb_visited);
+  EXPECT_EQ(false, tctx.msg_cb_visited);
+  tctx.len_cb_visited = tctx.msg_cb_visited = false;
+  tctx.offset = 0;
+
+  /* Send second half */
+  send_ret = sukat_send_msg(ctx, client, buf + (msg_len / 2), msg_len / 2);
+  EXPECT_EQ(SUKAT_SEND_OK, send_ret);
+
+  tctx.msg_cb_should_visit = true;
+  err = sukat_sock_read(client_ctx, sukat_sock_get_epoll_fd(client_ctx),
+                        EPOLLIN, 0);
+  EXPECT_EQ(0, err);
+  EXPECT_EQ(true, tctx.len_cb_visited);
+  EXPECT_EQ(true, tctx.msg_cb_visited);
+  tctx.len_cb_visited = tctx.msg_cb_visited = false;
+  tctx.offset = 0;
+  tctx.msg_cb_should_visit = tctx.len_cb_should_visit = false;
+
+  /* Send lots of small messages */
+  msg_len = 40;
+  for (i = 0; i < 100; i++)
+    {
+      memset(buf + i * msg_len, i, msg_len);
+      msg = (struct test_msg *)(buf + i * msg_len);
+      msg->type = 0;
+      msg->len = msg_len;
+      send_ret = sukat_send_msg(ctx, client, (uint8_t *)msg, msg->len);
+      EXPECT_EQ(SUKAT_SEND_OK, send_ret);
+    }
+
+  tctx.n_messages = 0;
+  tctx.msg_cb_should_visit = tctx.len_cb_should_visit = true;
+
+  err = sukat_sock_read(client_ctx, sukat_sock_get_epoll_fd(client_ctx),
+                        EPOLLIN, 0);
+  EXPECT_EQ(0, err);
+  EXPECT_EQ(true, tctx.len_cb_visited);
+  EXPECT_EQ(true, tctx.msg_cb_visited);
+  EXPECT_EQ(100, tctx.n_messages);
+
+  sukat_sock_disconnect(ctx, client);
   sukat_sock_destroy(client_ctx);
   sukat_sock_destroy(ctx);
 }

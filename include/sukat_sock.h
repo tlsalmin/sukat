@@ -23,6 +23,9 @@
 #include "sukat_log.h"
 #include "sukat_event.h"
 
+typedef struct sukat_sock_ctx sukat_sock_t;
+typedef struct sukat_sock_client_ctx sukat_sock_client_t;
+
 /*!
  * Parameters for type AF_INET.
  */
@@ -79,8 +82,7 @@ struct sukat_sock_params
  *
  * @param ctx           Caller context.
  * @param sockaddr      Data identifying the connected peer.
- * @param id            Unique identifier for client that can be used by the
- *                      server to identify a client when sending messages.
+ * @param client        Client context that can be replied to.
  * @param sock_len      The length of the identifying information.
  * @param disconnect    True if an already connected connection was
  *                      disconnected.
@@ -90,7 +92,7 @@ struct sukat_sock_params
  * @return != NULL      A new context to be given each time callbacks are
  *                      that are related to this connection.
  */
-typedef void *(*sukat_sock_new_conn_cb)(void *ctx, int id,
+typedef void *(*sukat_sock_new_conn_cb)(void *ctx, sukat_sock_client_t *client,
                                         struct sockaddr_storage *sockaddr,
                                         size_t sock_len, bool disconnect);
 
@@ -115,12 +117,13 @@ typedef int (*sukat_sock_msg_len_cb)(void *ctx, uint8_t *buf, size_t buf_len);
  * Callback invoked each time a full message is received.
  *
  * @param ctx           Caller context.
- * @param id            Unique client id.
+ * @param client        Client context. If the msg_cb is invoked on the client,
+ *                      this will be NULL.
  * @param buf           Buffer containing message.
  * @param buf_len       Length of message.
  */
-typedef void (*sukat_sock_msg_cb)(void *ctx, int id, uint8_t *buf,
-                                  size_t buf_len);
+typedef void (*sukat_sock_msg_cb)(void *ctx, sukat_sock_client_t *client,
+                                  uint8_t *buf, size_t buf_len);
 
 /*!
  * Callback invoked when an error is noticed in a connection. If id == -1,
@@ -147,9 +150,6 @@ struct sukat_sock_cbs
   sukat_sock_error_cb error_cb;
 };
 
-typedef struct sukat_sock_ctx sukat_sock_t;
-typedef struct sukat_sock_client_ctx sukat_sock_client_t;
-
 /*!
  * Create function for a socket.
  *
@@ -161,7 +161,7 @@ typedef struct sukat_sock_client_ctx sukat_sock_client_t;
  *                      API calls
  */
 sukat_sock_t *sukat_sock_create(struct sukat_sock_params *params,
-                                    struct sukat_sock_cbs *cbs);
+                                struct sukat_sock_cbs *cbs);
 
 int sukat_sock_read(sukat_sock_t *ctx, int epoll_fd,
                     uint32_t events, int timeout);
@@ -184,6 +184,16 @@ int sukat_sock_get_epoll_fd(sukat_sock_t *ctx);
 void sukat_sock_destroy(sukat_sock_t *ctx);
 
 /*!
+ * @brief Disconnects the client.
+ *
+ * \ref sukat_sock_new_conn_cb will not be called with disconnect == true.
+ *
+ * @param ctx           Main context.
+ * @param client        Client to disconnect.
+ */
+void sukat_sock_disconnect(sukat_sock_t *ctx, sukat_sock_client_t *client);
+
+/*!
  * Different possible return values for sukat API send calls.
  */
 enum sukat_sock_send_return
@@ -200,14 +210,14 @@ enum sukat_sock_send_return
  * the server.
  *
  * @param ctx           Sukat API context.
- * @param id            Unique ID for client received in
- *                      \ref sukat_sock_new_conn_cb. Ignored for clients.
+ * @param id            If non-null, the client to send message to.
  * @param msg           Message to send.
  * @param msg_len       Length of message.
  *
  * @return ::sukat_sock_send_return
  */
-enum sukat_sock_send_return sukat_send_msg(sukat_sock_t *ctx, int id,
+enum sukat_sock_send_return sukat_send_msg(sukat_sock_t *ctx,
+                                           sukat_sock_client_t *client,
                                            uint8_t *msg, size_t msg_len);
 
 #endif /* SUKAT_SOCK_H */
