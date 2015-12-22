@@ -43,16 +43,35 @@ struct sukat_sock_client_ctx
 {
   int fd; //!< Accepted fd.
   void *client_caller_ctx; //!< Specific context if set. Otherwise NULL.
+  struct {
+      uint8_t in_callback:1; /*!< If true, don't delete this immediately as we
+                                  might return and still need it. */
+      uint8_t destroyed:1; //!< If true, destroy on first chance.
+      uint8_t epollout:1; //!< If true, we're also waiting for epollout.
+      uint8_t unused:4;
+  };
   sukat_sock_t *main_ctx; //!< Backwards pointer to sukat_sock_t.
-  bool in_callback; //!< If true, don't delete this immediately as we might
-  bool destroyed; //!< If true, destroy on first chance.
-  bool waiting_on_write; //!< If true EPOLLOUT is set
   struct rw_cache read_cache;
   struct rw_cache write_cache;
 };
 
 struct sukat_sock_ctx
 {
+  struct sukat_sock_cbs cbs;
+  int fd; //!< Main fd for accept to server or connected fd for client.
+  void *caller_ctx; //!< If true, dont delete immediately.
+  int epoll_fd;
+  struct {
+      uint8_t connect_in_progress:1; //! If set, a connect returned EINPROCESS
+      uint8_t is_server:1; //!< True for server operation.
+      uint8_t in_callback:1; //!< If true, don't destroy oneself immediately.
+      uint8_t destroyed:1; //!< If true, don't destroy oneself immediately.
+      uint8_t epollout:1; //!< If true, we're also waiting for epollout.
+  };
+  size_t n_connections;
+  int master_epoll_fd;
+  int domain;
+  int type;
   union
     {
       struct sockaddr_storage storage;
@@ -61,18 +80,6 @@ struct sukat_sock_ctx
       struct sockaddr_un sun;
       struct sockaddr_tipc stipc;
     };
-  struct sukat_sock_cbs cbs;
-  int fd; //!< Main fd for accept to server or connected fd for client.
-  void *caller_ctx; //!< If true, dont delete immediately.
-  bool connect_in_progress; //! If set, a connect returned EINPROCESS
-  bool is_server; //!< True for server operation.
-  bool in_callback; //!< If true, don't destroy oneself immediately.
-  bool destroyed; //!< If true, don't destroy oneself immediately.
-  size_t n_connections;
-  int epoll_fd;
-  int master_epoll_fd;
-  int domain;
-  int type;
   struct rw_cache read_cache;
   struct rw_cache write_cache;
 };
@@ -227,6 +234,8 @@ static bool cache(sukat_sock_t *ctx, sukat_sock_client_t *client,
     {
       return true;
     }
+  DBG(ctx, "Caching %zu bytes from %s to %s", buf_amount,
+      (write) ? "writing" : "reading", (client) ? "client" : "main");
   if (client)
     {
       ret = cache_to(RW_CACHE(client, write), buf, buf_amount);
@@ -343,8 +352,80 @@ static bool socket_fill_unix(sukat_sock_t *ctx,
   return true;
 }
 
-static int socket_create(sukat_sock_t *ctx,
-                         struct sukat_sock_params *params)
+static int socket_create_hinted(sukat_sock_t *ctx, struct addrinfo *p,
+                                bool server, int backlog)
+{
+  int fd = socket(p->ai_family, p->ai_socktype |
+                  SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+  if (fd < 0)
+    {
+      ERR(ctx, "Failed to create socket: %s", strerror(errno));
+      return -1;
+    }
+  if (server)
+    {
+      int enable = 1;
+
+      if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR,
+                     &enable, sizeof(int)) != 0)
+        {
+          ERR(ctx, "Failed to set SO_REUSEADDR to socket %d: %s",
+              fd, strerror(errno));
+          close(fd);
+          return -1;
+        }
+
+      if (bind(fd, p->ai_addr, p->ai_addrlen) != 0)
+        {
+          ERR(ctx, "Failed to bind to socket: %s", strerror(errno));
+          goto fail;
+        }
+      if (socket_connection_oriented(p->ai_socktype) == true)
+        {
+          if (backlog == 0)
+            {
+              backlog = SOMAXCONN;
+            }
+          if (listen(fd, backlog) != 0)
+            {
+              ERR(ctx, "Failed to listen to socket: %s", strerror(errno));
+              goto fail;
+            }
+        }
+    }
+  else
+    {
+      if (connect(fd, p->ai_addr, p->ai_addrlen) != 0)
+        {
+          if (errno == EINPROGRESS)
+            {
+              DBG(ctx, "Connect not completed with a single call");
+              ctx->connect_in_progress = true;
+            }
+          else
+            {
+              ERR(ctx, "Failed to connect to end-point: %s", strerror(errno));
+              goto fail;
+            }
+        }
+    }
+  return fd;
+fail:
+  close(fd);
+  return -1;
+}
+
+/*!
+ * Socket creation for client server and any domain/type. Adapted from Beejs
+ * of course.
+ *
+ * @param ctx           Main context.
+ * @param params        Parameters for socket.
+ *
+ * @return >= 0         Valid fd.
+ * @return < 0          Failure.
+ * */
+static int socket_create(sukat_sock_t *ctx, struct sukat_sock_params *params)
 {
   int main_fd = -1;
   char socket_buf[128];
@@ -393,72 +474,25 @@ static int socket_create(sukat_sock_t *ctx,
       return -1;
     }
 
-  for (;p ; p = p->ai_next)
+  for (;p && main_fd == -1 ; p = p->ai_next)
     {
-      int fd = socket(p->ai_family, p->ai_socktype |
-                      SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-      if (fd < 0)
+      main_fd = socket_create_hinted(ctx, p, params->server, params->listen);
+      if (main_fd >= 0)
         {
-          ERR(ctx, "Failed to create socket: %s", strerror(errno));
-          continue;
+          memcpy(&ctx->sin, p->ai_addr, p->ai_addrlen);
+          ctx->n_connections++;
+
+          LOG(ctx, "%s created", socket_log(ctx, params, socket_buf,
+                                            sizeof(socket_buf)));
+          break;
         }
-      if (params->server)
-        {
-          if (bind(fd, p->ai_addr, p->ai_addrlen) != 0)
-            {
-              ERR(ctx, "Failed to bind to socket: %s", strerror(errno));
-              close(fd);
-              continue;
-            }
-          if (socket_connection_oriented(params->type))
-            {
-              if (params->listen == 0)
-                {
-                  params->listen = SOMAXCONN;
-                }
-              if (listen(fd, params->listen) != 0)
-                {
-                  ERR(ctx, "Failed to listen to socket: %s", strerror(errno));
-                  close(fd);
-                  continue;
-                }
-            }
-        }
-      else
-        {
-          if (connect(fd, p->ai_addr, p->ai_addrlen) != 0)
-            {
-              if (errno == EINPROGRESS)
-                {
-                  DBG(ctx, "Connect not completed with a single call");
-                  ctx->connect_in_progress = true;
-                }
-              else
-                {
-                  ERR(ctx, "Failed to connect to end-point: %s", strerror(errno));
-                  close(fd);
-                  continue;
-                }
-            }
-        }
-      main_fd = fd;
-      break; // Explicit break so we wont do p = p->ai_next
     }
   if (servinfo)
     {
       freeaddrinfo(servinfo);
     }
-  if (main_fd >= 0)
-    {
-      memcpy(&ctx->sin, p->ai_addr, p->ai_addrlen);
-      ctx->n_connections++;
 
-      LOG(ctx, "%s created", socket_log(ctx, params, socket_buf,
-                                        sizeof(socket_buf)));
-      return main_fd;
-    }
-
-  return -1;
+  return main_fd;
 }
 
 static bool event_ctl(int epoll_fd, int fd, void *data, int op, uint32_t events)
@@ -491,6 +525,37 @@ static bool event_add_to_ctx(sukat_sock_t *ctx, int fd, void *data, int op,
     return true;
 }
 
+static bool event_epollout(sukat_sock_t *ctx,
+                           sukat_sock_client_t *client, bool end)
+{
+  void *data = (client) ? (void *)client : (void *)ctx;
+  int fd = (client) ? client->fd : ctx->fd;
+  bool epollout_flag = (client) ? client->epollout : ctx->epollout;
+  uint32_t events = EPOLLIN;
+
+  if (!end)
+    {
+      events |= EPOLLOUT;
+    }
+
+  if (!(epollout_flag ^ end))
+    {
+      if (event_add_to_ctx(ctx, fd, data, EPOLL_CTL_MOD, events) != true)
+        {
+          return false;
+        }
+      if (client)
+        {
+          client->epollout = (end) ? 0 : 1;
+        }
+      else
+        {
+          ctx->epollout = (end) ? 0 : 1;
+        }
+    }
+  return true;
+}
+
 static void *get_caller_ctx(sukat_sock_t *ctx, sukat_sock_client_t *client)
 {
   if (client && client->client_caller_ctx)
@@ -506,7 +571,7 @@ static void client_close(sukat_sock_t *ctx, sukat_sock_client_t *client)
   void *caller_ctx = get_caller_ctx(ctx, client);
 
   LOG(ctx, "Removing client %d", client->fd);
-  if (client->waiting_on_write)
+  if (client->epollout)
     {
       events |= EPOLLOUT;
     }
@@ -741,7 +806,7 @@ static void event_non_epollin(sukat_sock_t *ctx,
                               sukat_sock_client_t *client, uint32_t events)
 {
   void *caller_ctx = get_caller_ctx(ctx, client);
-  int errval = (events & EPOLLIN) ? ECONNABORTED :
+  int errval = (events & EPOLLHUP) ? ECONNABORTED :
     ECONNRESET;
 
   ERR(ctx, "%s event received from %s connection",
@@ -754,7 +819,7 @@ static ret_t event_handle(sukat_sock_t *ctx, struct epoll_event *event)
 {
   if (event->data.ptr == (void *)ctx)
     {
-      if (event->events != EPOLLIN)
+      if (event->events != EPOLLIN && event->events != EPOLLOUT)
         {
           event_non_epollin(ctx, NULL, event->events);
           return ERR_FATAL;
@@ -781,7 +846,7 @@ static ret_t event_handle(sukat_sock_t *ctx, struct epoll_event *event)
 
       client->in_callback = true;
 
-      if (event->events != EPOLLIN)
+      if (event->events != EPOLLIN && event->events != EPOLLOUT)
         {
           event_non_epollin(ctx, client, event->events);
           client->in_callback = false;
@@ -857,7 +922,7 @@ out:
 }
 
 sukat_sock_t *sukat_sock_create(struct sukat_sock_params *params,
-                                    struct sukat_sock_cbs *cbs)
+                                struct sukat_sock_cbs *cbs)
 {
   sukat_sock_t *ctx;
 
@@ -991,15 +1056,12 @@ send_cached(sukat_sock_t *ctx, sukat_sock_client_t *client)
         }
       if (sent == cache->len)
         {
-          void *use_ctx = (client) ? (void *)client : (void *)ctx;
-
           free_cache(cache);
-          /* Stop waiting for EPOLLOUT */
-          if (event_add_to_ctx(ctx, fd, use_ctx,
-                               EPOLL_CTL_MOD, EPOLLIN) != true)
+          if (event_epollout(ctx, client, true) != true)
             {
               return SUKAT_SEND_ERROR;
             }
+          /* Stop waiting for EPOLLOUT */
         }
       else
         {
@@ -1040,22 +1102,24 @@ static enum sukat_sock_send_return send_stream_msg(sukat_sock_t *ctx,
   do
     {
       ret = write(fd, msg + sent, msg_len - sent);
-    } while (ret > 0 && (sent += ret) < msg_len);
-  if (ret_was_ok(ctx, client, ret) != true)
-    {
-      return SUKAT_SEND_ERROR;
     }
-  /* If we cant send a single byte, just return EAGAIN */
-  if (sent == 0)
+  while (ret > 0 && (sent += ret) < msg_len);
+  if (ret_was_ok(ctx, client, ret) == true)
     {
-      return SUKAT_SEND_EAGAIN;
+      /* If we cant send a single byte, just return EAGAIN */
+      if (sent == 0)
+        {
+          return SUKAT_SEND_EAGAIN;
+        }
+      if (cache(ctx, client, msg + sent, msg_len - sent, true) == true)
+        {
+          if ((msg_len == sent) || event_epollout(ctx, client, false) == true)
+            {
+              return SUKAT_SEND_OK;
+            }
+        }
     }
-  if (cache(ctx, client, msg + sent, msg_len - sent, true) != true)
-    {
-      return SUKAT_SEND_ERROR;
-    }
-
-  return SUKAT_SEND_OK;
+  return SUKAT_SEND_ERROR;
 }
 
 static enum sukat_sock_send_return send_dgram_msg(sukat_sock_t *ctx,

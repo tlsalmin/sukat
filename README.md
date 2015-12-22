@@ -1,8 +1,3 @@
-/*!
- * defgroup sukat_api Sukat toolkit.
- * @{
- */
-
 Sukat Framework
 ===============
 
@@ -42,5 +37,3 @@ To generate the doxygen documentation:
 mkdir build && cd build
 cmake ../ && make && make doc
 ```
-
-/*! }@ */

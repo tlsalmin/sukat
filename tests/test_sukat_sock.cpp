@@ -425,7 +425,7 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_read)
   struct read_ctx tctx = { };
   int err;
   enum sukat_sock_send_return send_ret;
-  size_t msg_len = 5000, i;
+  size_t msg_len = 5000, i, total_sent, total_read;
 
   default_cbs.msg_len_cb = len_cb;
   default_cbs.conn_cb = new_conn_cb_for_read;
@@ -554,6 +554,31 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_read)
   EXPECT_EQ(true, tctx.len_cb_visited);
   EXPECT_EQ(true, tctx.msg_cb_visited);
   EXPECT_EQ(100, tctx.n_messages);
+
+  /* Send messages until EAGAIN. */
+  memset(buf, 0, sizeof(buf));
+  msg = (struct test_msg *)(buf);
+  msg->type = 0;
+  msg->len = sizeof(buf);
+  total_sent = 0;
+  while ((send_ret = sukat_send_msg(ctx, client,
+                                    (uint8_t *)msg, msg->len)) == SUKAT_SEND_OK)
+    {
+      total_sent += msg_len;
+    }
+  EXPECT_EQ(SUKAT_SEND_EAGAIN, send_ret);
+  EXPECT_GT(total_sent, 0);
+
+  total_read = 0;
+  while ((err = read(client_ctx->fd, buf, sizeof(buf))) > 0)
+    {
+      total_read += err;
+    }
+  EXPECT_TRUE(err == -1 && (errno == EAGAIN || errno == EWOULDBLOCK));
+  EXPECT_GT(total_read, 0);
+
+  /* So somehow I can't get the send side to ever send a partial message
+   * I'll just do the send caching test in AF_INET */
 
   sukat_sock_disconnect(ctx, client);
   sukat_sock_destroy(client_ctx);
