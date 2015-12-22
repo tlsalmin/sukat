@@ -6,6 +6,10 @@
  * @{
  */
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
@@ -19,6 +23,7 @@
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <sys/epoll.h>
+#include <netdb.h>
 
 #include "sukat_sock.h"
 #include "sukat_log_internal.h"
@@ -341,92 +346,118 @@ static bool socket_fill_unix(sukat_sock_t *ctx,
 static int socket_create(sukat_sock_t *ctx,
                          struct sukat_sock_params *params)
 {
-  int fd = -1;
-  union {
-      struct sockaddr_tipc tipc;
-      struct sockaddr_un un;
-  } sockaddr;
-  socklen_t addrlen = 0;
+  int main_fd = -1;
   char socket_buf[128];
-  int type = params->type;
+  union {
+      struct sockaddr_un sun;
+      struct sockaddr_tipc tipc;
+  } socks;
+  struct addrinfo hints = { }, *servinfo = NULL, *p;
 
-  memset(&sockaddr, 0, sizeof(sockaddr));
-  type |= SOCK_NONBLOCK | SOCK_CLOEXEC;
+  memset(&socks, 0, sizeof(socks));
   LOG(ctx, "%s: Creating", socket_log(ctx, params, socket_buf,
                                       sizeof(socket_buf)));
-  fd = socket(params->domain, type, 0);
-  if (fd < 0)
-    {
-      ERR(ctx, "Failed to create socket: %s", strerror(errno));
-      goto fail;
-    }
+  p = &hints;
+  hints.ai_family = params->domain;
+  hints.ai_socktype = params->type;
+  hints.ai_addr = (struct sockaddr *)&socks;
+
   if (params->domain == AF_UNIX)
     {
-      if (socket_fill_unix(ctx, params, &sockaddr.un, &addrlen) != true)
+      if (socket_fill_unix(ctx, params, &socks.sun, &hints.ai_addrlen) != true)
         {
-          goto fail;
+          return -1;
         }
     }
   else if (params->domain == AF_TIPC)
     {
-      socket_fill_tipc(params, &sockaddr.tipc, &addrlen);
+      socket_fill_tipc(params, &socks.tipc, &hints.ai_addrlen);
+    }
+  else if (params->domain == AF_INET || params->domain == AF_INET6 ||
+           params->domain == AF_UNSPEC)
+    {
+      hints.ai_addr = NULL;
+      hints.ai_flags = AI_PASSIVE;
+      if (getaddrinfo(params->pinet.ip, params->pinet.port, &hints, &servinfo)
+          != 0)
+        {
+          ERR(ctx, "Failed to getaddrinfo for %s:%s", params->pinet.ip,
+              params->pinet.port);
+          return -1;
+        }
+      p = servinfo;
     }
   else
     {
       ERR(ctx, "domain %d socket not implemented", params->domain);
-      goto fail;
+      return -1;
     }
-  if (params->server)
+
+  for (;p ; p = p->ai_next)
     {
-      if (bind(fd, (struct sockaddr *)&sockaddr, addrlen) != 0)
+      int fd = socket(p->ai_family, p->ai_socktype |
+                      SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+      if (fd < 0)
         {
-          ERR(ctx, "Failed to bind to socket: %s", strerror(errno));
-          goto fail;
+          ERR(ctx, "Failed to create socket: %s", strerror(errno));
+          continue;
         }
-      if (socket_connection_oriented(params->type))
+      if (params->server)
         {
-          if (params->listen == 0)
+          if (bind(fd, p->ai_addr, p->ai_addrlen) != 0)
             {
-              params->listen = SOMAXCONN;
+              ERR(ctx, "Failed to bind to socket: %s", strerror(errno));
+              close(fd);
+              continue;
             }
-          if (listen(fd, params->listen) != 0)
+          if (socket_connection_oriented(params->type))
             {
-              ERR(ctx, "Failed to listen to socket: %s", strerror(errno));
-              goto fail;
-            }
-        }
-    }
-  else
-    {
-      if (connect(fd, (struct sockaddr *)&sockaddr, addrlen) != 0)
-        {
-          if (errno == EINPROGRESS)
-            {
-              DBG(ctx, "Connect not completed with a single call");
-              ctx->connect_in_progress = true;
-            }
-          else
-            {
-              ERR(ctx, "Failed to connect to end-point: %s", strerror(errno));
-              goto fail;
+              if (params->listen == 0)
+                {
+                  params->listen = SOMAXCONN;
+                }
+              if (listen(fd, params->listen) != 0)
+                {
+                  ERR(ctx, "Failed to listen to socket: %s", strerror(errno));
+                  close(fd);
+                  continue;
+                }
             }
         }
+      else
+        {
+          if (connect(fd, p->ai_addr, p->ai_addrlen) != 0)
+            {
+              if (errno == EINPROGRESS)
+                {
+                  DBG(ctx, "Connect not completed with a single call");
+                  ctx->connect_in_progress = true;
+                }
+              else
+                {
+                  ERR(ctx, "Failed to connect to end-point: %s", strerror(errno));
+                  close(fd);
+                  continue;
+                }
+            }
+        }
+      main_fd = fd;
+      break; // Explicit break so we wont do p = p->ai_next
     }
-  memcpy(&ctx->sin, &sockaddr, sizeof(sockaddr));
-
-  LOG(ctx, "%s created", socket_log(ctx, params, socket_buf,
-                                    sizeof(socket_buf)));
-
-  //TODO save some sockaddr_storage for debugging as union of parameters.*/
-  ctx->n_connections++;
-
-  return fd;
-
-fail:
-  if (fd >= 0)
+  if (servinfo)
     {
-      close(fd);
+      freeaddrinfo(servinfo);
     }
+  if (main_fd >= 0)
+    {
+      memcpy(&ctx->sin, p->ai_addr, p->ai_addrlen);
+      ctx->n_connections++;
+
+      LOG(ctx, "%s created", socket_log(ctx, params, socket_buf,
+                                        sizeof(socket_buf)));
+      return main_fd;
+    }
+
   return -1;
 }
 
