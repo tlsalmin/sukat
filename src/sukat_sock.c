@@ -24,6 +24,7 @@
 #include <netinet/ip.h>
 #include <sys/epoll.h>
 #include <netdb.h>
+#include <arpa/inet.h>
 
 #include "sukat_sock.h"
 #include "sukat_log_internal.h"
@@ -79,7 +80,9 @@ struct sukat_sock_ctx
       struct sockaddr_in6 sin6;
       struct sockaddr_un sun;
       struct sockaddr_tipc stipc;
+      struct sockaddr saddr;
     };
+  socklen_t slen;
   struct rw_cache read_cache;
   struct rw_cache write_cache;
 };
@@ -135,6 +138,17 @@ static bool socket_connection_oriented(int type)
   return true;
 }
 
+#define SAFEPUT(...)                                                          \
+  do                                                                          \
+    {                                                                         \
+      n_used += snprintf(buf + n_used, buf_len - n_used, __VA_ARGS__);        \
+      if (n_used >= buf_len)                                                  \
+        {                                                                     \
+          return buf;                                                         \
+        }                                                                     \
+    }                                                                         \
+  while (0)
+
 static char *socket_log(sukat_sock_t *ctx, struct sukat_sock_params *params,
                         char *buf, size_t buf_len)
 {
@@ -151,16 +165,6 @@ static char *socket_log(sukat_sock_t *ctx, struct sukat_sock_params *params,
   int type = (params) ? params->type : ctx->type;
 
   assert(ctx != NULL && buf != NULL && buf_len > 0);
-#define SAFEPUT(...)                                                          \
-  do                                                                          \
-    {                                                                         \
-      n_used += snprintf(buf + n_used, buf_len - n_used, __VA_ARGS__);        \
-      if (n_used >= buf_len)                                                  \
-        {                                                                     \
-          return buf;                                                         \
-        }                                                                     \
-    }                                                                         \
-  while (0)
 
   switch(type)
     {
@@ -200,6 +204,54 @@ static char *socket_log(sukat_sock_t *ctx, struct sukat_sock_params *params,
 
   return buf;
 }
+
+static char *socket_log_saddr(sukat_sock_t *ctx, char *buf, size_t buf_len)
+{
+  size_t n_used = 0;
+  char inet_buf[INET6_ADDRSTRLEN];
+
+  assert(ctx != NULL && buf != NULL && buf_len > 0);
+  switch(ctx->type)
+    {
+    case SOCK_STREAM:
+      SAFEPUT("Stream ");
+      break;
+    case SOCK_DGRAM:
+      SAFEPUT("Datagram ");
+      break;
+    case SOCK_SEQPACKET:
+      SAFEPUT("Seqpacket ");
+      break;
+    default:
+      SAFEPUT("Unknown type %d", ctx->type);
+      break;
+    }
+
+  switch(ctx->domain)
+    {
+    case AF_UNIX:
+      SAFEPUT("UNIX %s", ctx->sun.sun_path);
+    case AF_TIPC:
+      SAFEPUT("TIPC port_type %u instance %u", ctx->stipc.addr.nameseq.type,
+              ctx->stipc.addr.nameseq.lower);
+    case AF_INET:
+    case AF_INET6:
+      SAFEPUT("IPv%d IP %s port %hu", (ctx->domain == AF_INET) ? 4 : 6,
+              inet_ntop(ctx->domain, (ctx->domain == AF_INET) ?
+                        (void *)&ctx->sin.sin_addr :
+                        (void *)&ctx->sin6.sin6_addr,
+                        inet_buf, sizeof(inet_buf)),
+              ntohs(ctx->sin.sin_port));
+      // I don't think AF_UNSPEC should be here anymore
+       break;
+    default:
+      SAFEPUT("Unknown family %d", ctx->domain);
+      break;
+    }
+  return buf;
+}
+
+#undef SAFEPUT
 
 static void free_cache(struct rw_cache *cache)
 {
@@ -415,6 +467,15 @@ fail:
   return -1;
 }
 
+static bool is_inet(int domain)
+{
+  if (domain == AF_INET || domain == AF_INET6 || domain == AF_UNSPEC)
+    {
+      return true;
+    }
+  return false;
+}
+
 /*!
  * Socket creation for client server and any domain/type. Adapted from Beejs
  * of course.
@@ -454,8 +515,7 @@ static int socket_create(sukat_sock_t *ctx, struct sukat_sock_params *params)
     {
       socket_fill_tipc(params, &socks.tipc, &hints.ai_addrlen);
     }
-  else if (params->domain == AF_INET || params->domain == AF_INET6 ||
-           params->domain == AF_UNSPEC)
+  else if (is_inet(params->domain))
     {
       hints.ai_addr = NULL;
       hints.ai_flags = AI_PASSIVE;
@@ -479,11 +539,31 @@ static int socket_create(sukat_sock_t *ctx, struct sukat_sock_params *params)
       main_fd = socket_create_hinted(ctx, p, params->server, params->listen);
       if (main_fd >= 0)
         {
-          memcpy(&ctx->sin, p->ai_addr, p->ai_addrlen);
-          ctx->n_connections++;
+          ctx->slen = p->ai_addrlen;
 
-          LOG(ctx, "%s created", socket_log(ctx, params, socket_buf,
-                                            sizeof(socket_buf)));
+          /* In the server case we might use port so add extra querying for
+             these scenarios */
+          if (ctx->is_server && is_inet(params->domain))
+            {
+              ctx->slen = sizeof(ctx->storage);
+              if (getsockname(main_fd, &ctx->saddr, &ctx->slen) != 0)
+                {
+                  ERR(ctx, "Failed to query address server is bound to :%s",
+                      strerror(errno));
+                  close(main_fd);
+                  continue;
+                }
+            }
+          else
+            {
+              memcpy(&ctx->sin, p->ai_addr, p->ai_addrlen);
+            }
+          ctx->n_connections++;
+          ctx->domain = p->ai_family;
+          ctx->type = p->ai_socktype;
+
+          LOG(ctx, "%s created", socket_log_saddr(ctx, socket_buf,
+                                                  sizeof(socket_buf)));
           break;
         }
     }
@@ -623,57 +703,40 @@ static void server_accept_cb(sukat_sock_t *ctx)
   ERR(ctx, "Failed to accept: %s", strerror(errno));
 }
 
-static bool client_continue_connect(sukat_sock_t *ctx)
-{
-  socklen_t slen;
-
-  switch (ctx->domain)
-    {
-    case AF_TIPC:
-      slen = sizeof(ctx->stipc);
-      break;
-    case AF_UNIX:
-      slen = sizeof(ctx->sun);
-      break;
-    case AF_INET:
-      slen = sizeof(ctx->sin);
-      break;
-    case AF_INET6:
-      slen = sizeof(ctx->sin6);
-      break;
-    default:
-      ERR(ctx, "domain %d not implemented for continued connect",
-          ctx->domain);
-      return false;
-    }
-
-  if (connect(ctx->fd, (struct sockaddr *)&ctx->storage, slen) != 0)
-    {
-      if (errno == EINPROGRESS)
-        {
-          DBG(ctx, "Connect still in progress");
-        }
-      else
-        {
-          ERR(ctx, "Connect continuing failed: %s", strerror(errno));
-          USE_CB(ctx, NULL, error_cb, ctx->caller_ctx, 0, errno);
-        }
-      return false;
-    }
-  else
-    {
-      LOG(ctx, "Connected!");
-      ctx->connect_in_progress = false;
-    }
-  return true;
-}
-
 typedef enum event_handling_ret
 {
   ERR_FATAL = -1,
   ERR_OK = 0,
   ERR_BREAK = 1,
 } ret_t;
+
+static ret_t client_continue_connect(sukat_sock_t *ctx)
+{
+  int opt;
+  socklen_t len = sizeof(opt);
+
+  if (getsockopt(ctx->fd, SOL_SOCKET, SO_ERROR, &opt, &len) == 0)
+    {
+      if (!opt)
+        {
+          LOG(ctx, "Connected!");
+          ctx->connect_in_progress = false;
+          event_epollout(ctx, NULL, true);
+          USE_CB(ctx, NULL, conn_cb, ctx->caller_ctx, NULL, &(ctx->storage),
+                 ctx->slen, false);
+          return ERR_OK;
+        }
+      else
+        {
+          ERR(ctx, "Connect failed: %s", strerror(opt));
+        }
+    }
+  else
+    {
+      ERR(ctx, "Failed to query connection state: %s", strerror(errno));
+    }
+  return ERR_FATAL;
+}
 
 static bool keep_going(sukat_sock_t *ctx,
                        sukat_sock_client_t *client)
@@ -706,65 +769,96 @@ static bool ret_was_ok(sukat_sock_t *ctx, sukat_sock_client_t *client,
 
 #define BUF_LEFT (sizeof(buf) - n_read)
 #define UNPROCESSED (n_read - processed)
+#define ITBLOCKS(_retval)                                                     \
+  (_retval == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
 
 static ret_t read_stream(sukat_sock_t *ctx, sukat_sock_client_t *client)
 {
-  size_t n_read = 0;
   uint8_t buf[BUFSIZ];
-  int fd = (client) ? client->fd : ctx->fd;
   ssize_t read_now;
-  size_t processed = 0;
-  void *caller_ctx = get_caller_ctx(ctx, client);
-  int client_id = (client) ? client->fd : 0;
+  bool blocked = false;
+  size_t n_read = 0;
 
   DBG(ctx, "Reading from %s", (client) ? "client" : "server");
 
   uncache(ctx, client, buf, &n_read, false);
 
-  do
+  while (blocked == false)
     {
-      read_now = read(fd, buf + n_read, BUF_LEFT);
-    } while (read_now > 0 && (n_read += read_now) < sizeof(buf));
-  if (ret_was_ok(ctx, client, read_now) != true)
-    {
-      return ERR_FATAL;
-    }
+      int fd = (client) ? client->fd : ctx->fd;
+      size_t processed;
+      void *caller_ctx = get_caller_ctx(ctx, client);
+      int client_id = (client) ? client->fd : 0;
 
-  DBG(ctx, "Read %zu bytes from %s", n_read, (client) ? "client" : "server");
-
-  while (UNPROCESSED && keep_going(ctx, client))
-    {
-      size_t msg_len = 0;
-
-      if (ctx->cbs.msg_len_cb)
+      do
         {
-          int msg_len_query = ctx->cbs.msg_len_cb(caller_ctx, buf + processed,
-                                                  UNPROCESSED);
-          if (msg_len_query < 0)
+          read_now = read(fd, buf + n_read, BUF_LEFT);
+        } while (read_now > 0 && (n_read += read_now) < sizeof(buf));
+      if (ret_was_ok(ctx, client, read_now) != true)
+        {
+          return ERR_FATAL;
+        }
+      else if (ITBLOCKS(read_now))
+        {
+          blocked = true;
+        }
+
+      DBG(ctx, "Read %zu bytes from %s", n_read, (client) ? "client" :
+          "server");
+
+      processed = 0;
+      while (UNPROCESSED && keep_going(ctx, client))
+        {
+          size_t msg_len = 0;
+
+          if (ctx->cbs.msg_len_cb)
             {
-              ERR(ctx, "Corruption detected by caller");
-              return ERR_FATAL;
-            }
-          msg_len = (size_t)msg_len_query;
-          if (msg_len == 0 || msg_len > UNPROCESSED)
-            {
-              if (cache(ctx, client, buf + processed, UNPROCESSED, false)
-                  != true)
+              int msg_len_query =
+                ctx->cbs.msg_len_cb(caller_ctx, buf + processed, UNPROCESSED);
+
+              if (msg_len_query < 0)
                 {
-                  USE_CB(ctx, client, error_cb, caller_ctx, client_id, ENOMEM);
+                  ERR(ctx, "Corruption detected by caller");
                   return ERR_FATAL;
                 }
-              return ERR_OK;
+              msg_len = (size_t)msg_len_query;
+              if ((msg_len == 0 || msg_len > UNPROCESSED))
+                {
+                  if (blocked != true)
+                    {
+                      memmove(buf, buf + processed, UNPROCESSED);
+                      break;
+                    }
+                  else
+                    {
+                      if (cache(ctx, client, buf + processed,
+                                UNPROCESSED, false) != true)
+                        {
+                          USE_CB(ctx, client, error_cb,
+                                 caller_ctx, client_id, ENOMEM);
+                          return ERR_FATAL;
+                        }
+                      return ERR_OK;
+                    }
+                }
             }
+          else
+            {
+              ERR(ctx, "Stream oriented without a msg_len_cb not implemented");
+              return ERR_FATAL;
+            }
+          USE_CB(ctx, client, msg_cb,
+                 caller_ctx, client, buf + processed, msg_len);
+          processed += msg_len;
+        }
+      if (processed == n_read)
+        {
+          n_read = 0;
         }
       else
         {
-          ERR(ctx, "Stream oriented without a msg_len_cb not implemented");
-          return ERR_FATAL;
+          n_read = UNPROCESSED;
         }
-      USE_CB(ctx, client, msg_cb,
-             caller_ctx, client, buf + processed, msg_len);
-      processed += msg_len;
     }
 
   return ERR_OK;
@@ -783,6 +877,69 @@ static ret_t read_connectionless(sukat_sock_t *ctx,
   ERR(ctx, "Not implemented");
   (void)client;
   return ERR_FATAL;
+}
+
+/*!
+ * Send any cached data. Should only happen on connection oriented sockets
+ *
+ * @param ctx Main context.
+ * @param client If non-null, client context. If NULL we're using socket in
+ *        main.
+ */
+static enum sukat_sock_send_return
+send_cached(sukat_sock_t *ctx, sukat_sock_client_t *client)
+{
+  struct rw_cache *cache = (client) ? &client->write_cache : &ctx->write_cache;
+
+  if (cache->data && cache->len)
+    {
+      size_t sent = 0;
+      ssize_t ret;
+      int fd = (client) ? client->fd : ctx->fd;
+
+      DBG(ctx, "Finishing send of %zu bytes to %s.", cache->len,
+          (client) ? "client" :"server");
+
+      do
+        {
+          ret = write(fd, cache->data + sent, cache->len - sent);
+        } while (ret > 0 && (sent  += ret) < cache->len);
+      if (ret_was_ok(ctx, client, ret) != true)
+        {
+          return SUKAT_SEND_ERROR;
+        }
+      if (sent == cache->len)
+        {
+          free_cache(cache);
+          if (event_epollout(ctx, client, true) != true)
+            {
+              return SUKAT_SEND_ERROR;
+            }
+          /* Stop waiting for EPOLLOUT */
+        }
+      else
+        {
+          /* If we sent 0, we don't need to do anyting, just try again. */
+          if (sent != 0)
+            {
+              size_t left = cache->len - sent;
+              uint8_t *data = (uint8_t *)malloc(left);
+              DBG(ctx, "Still missing %zu bytes to send", left);
+
+              if (!data)
+                {
+                  ERR(ctx, "Could not cache data for sending: %s", strerror);
+                  return SUKAT_SEND_ERROR;
+                }
+              memcpy(data, cache->data + sent, left);
+              free_cache(cache);
+              cache->data = data;
+              cache->len = left;
+            }
+          return SUKAT_SEND_EAGAIN;
+        }
+    }
+  return SUKAT_SEND_OK;
 }
 
 static ret_t event_read(sukat_sock_t *ctx,
@@ -826,9 +983,11 @@ static ret_t event_handle(sukat_sock_t *ctx, struct epoll_event *event)
         }
       if (!ctx->is_server && ctx->connect_in_progress)
         {
-          if (client_continue_connect(ctx) != true)
+          ret_t ret = client_continue_connect(ctx);
+
+          if (ret != ERR_OK)
             {
-              return ERR_OK;
+              return ret;
             }
         }
       else if (ctx->is_server)
@@ -837,7 +996,14 @@ static ret_t event_handle(sukat_sock_t *ctx, struct epoll_event *event)
         }
       else
         {
-          return event_read(ctx, NULL);
+          if (event->events == EPOLLOUT && ctx->write_cache.len > 0)
+            {
+              send_cached(ctx, NULL);
+            }
+          else
+            {
+              return event_read(ctx, NULL);
+            }
         }
     }
   else
@@ -854,13 +1020,31 @@ static ret_t event_handle(sukat_sock_t *ctx, struct epoll_event *event)
         }
       else
         {
-          ret_t ret;
-          ret = event_read(ctx, client);
-
-          if (ret != ERR_OK || client->destroyed)
+          if (event->events == EPOLLOUT)
             {
-              client->in_callback = false;
-              client_close(ctx, client);
+              if (client->write_cache.len == 0)
+                {
+                  ERR(ctx, "Epollout set although nothing to send");
+                }
+              else
+                {
+                  if (send_cached(ctx, client) == SUKAT_SEND_ERROR)
+                    {
+                      client->in_callback = false;
+                      client_close(ctx, client);
+                    }
+                }
+            }
+          else
+            {
+              ret_t ret;
+              ret = event_read(ctx, client);
+
+              if (ret != ERR_OK || client->destroyed)
+                {
+                  client->in_callback = false;
+                  client_close(ctx, client);
+                }
             }
         }
     }
@@ -910,6 +1094,10 @@ int sukat_sock_read(sukat_sock_t *ctx, int epoll_fd,
               ret = ERR_OK;
               goto out;
             }
+        }
+      if (timeout > 0)
+        {
+          timeout = 0;
         }
     } while (nfds > 0 && ctx->destroyed != true && ctx->n_connections > 0);
 
@@ -974,6 +1162,18 @@ sukat_sock_t *sukat_sock_create(struct sukat_sock_params *params,
     {
       goto fail;
     }
+  if (!ctx->is_server)
+    {
+      if (ctx->connect_in_progress)
+        {
+          event_epollout(ctx, NULL, false);
+        }
+      else if (socket_connection_oriented(ctx->type))
+        {
+          USE_CB(ctx, NULL, conn_cb,
+                 ctx->caller_ctx, NULL, &ctx->storage, ctx->slen, false);
+        }
+    }
 
   return ctx;
 
@@ -1023,69 +1223,6 @@ int sukat_sock_get_epoll_fd(sukat_sock_t *ctx)
     }
   errno = EINVAL;
   return -1;
-}
-
-/*!
- * Send any cached data. Should only happen on connection oriented sockets
- *
- * @param ctx Main context.
- * @param client If non-null, client context. If NULL we're using socket in
- *        main.
- */
-static enum sukat_sock_send_return
-send_cached(sukat_sock_t *ctx, sukat_sock_client_t *client)
-{
-  struct rw_cache *cache = (client) ? &client->write_cache : &ctx->write_cache;
-
-  if (cache->data && cache->len)
-    {
-      size_t sent = 0;
-      ssize_t ret;
-      int fd = (client) ? client->fd : ctx->fd;
-
-      DBG(ctx, "Finishing send of %zu bytes to %s.", cache->len,
-          (client) ? "client" :"server");
-
-      do
-        {
-          ret = write(fd, cache->data + sent, cache->len - sent);
-        } while (ret > 0 && (sent  += ret) < cache->len);
-      if (ret_was_ok(ctx, client, ret) != true)
-        {
-          return SUKAT_SEND_ERROR;
-        }
-      if (sent == cache->len)
-        {
-          free_cache(cache);
-          if (event_epollout(ctx, client, true) != true)
-            {
-              return SUKAT_SEND_ERROR;
-            }
-          /* Stop waiting for EPOLLOUT */
-        }
-      else
-        {
-          /* If we sent 0, we don't need to do anyting, just try again. */
-          if (sent != 0)
-            {
-              size_t left = cache->len - sent;
-              uint8_t *data = (uint8_t *)malloc(left);
-              DBG(ctx, "Still missing %zu bytes to send", left);
-
-              if (!data)
-                {
-                  ERR(ctx, "Could not cache data for sending: %s", strerror);
-                  return SUKAT_SEND_ERROR;
-                }
-              memcpy(data, cache->data + sent, left);
-              free_cache(cache);
-              cache->data = data;
-              cache->len = left;
-            }
-          return SUKAT_SEND_EAGAIN;
-        }
-    }
-  return SUKAT_SEND_OK;
 }
 
 static enum sukat_sock_send_return send_stream_msg(sukat_sock_t *ctx,
@@ -1154,6 +1291,12 @@ enum sukat_sock_send_return sukat_send_msg(sukat_sock_t *ctx,
 
   if (!ctx)
     {
+      return SUKAT_SEND_ERROR;
+    }
+  if (ctx->connect_in_progress)
+    {
+      ERR(ctx, "Cannot send message, since connect still in progress");
+      errno = EINPROGRESS;
       return SUKAT_SEND_ERROR;
     }
 

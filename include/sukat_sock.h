@@ -79,10 +79,11 @@ struct sukat_sock_params
 /*!
  * Callback invoked when the server gets a new connection. Also if set by a
  * client, it will be called after succesfully connecting to the server.
+ * In the latter case, the client pointer will be null.
  *
  * @param ctx           Caller context.
- * @param sockaddr      Data identifying the connected peer.
  * @param client        Client context that can be replied to.
+ * @param sockaddr      Data identifying the connected peer.
  * @param sock_len      The length of the identifying information.
  * @param disconnect    True if an already connected connection was
  *                      disconnected.

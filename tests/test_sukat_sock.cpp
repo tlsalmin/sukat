@@ -298,6 +298,7 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_connect)
   ASSERT_NE(nullptr, ctx);
 
   default_params.server = false;
+  default_cbs.conn_cb = NULL;
   client_ctx = sukat_sock_create(&default_params, &default_cbs);
   ASSERT_NE(nullptr, ctx);
 
@@ -356,8 +357,10 @@ struct read_ctx
   bool return_corrupt;
   sukat_sock_client_t *newest_client;
   bool should_disconnect;
+  bool connect_visited;
   bool msg_cb_should_visit;
   bool msg_cb_visited;
+  bool compare_payload;
   uint8_t *buf;
   size_t offset;
   size_t n_messages;
@@ -396,13 +399,17 @@ static void msg_cb(void *ctx, sukat_sock_client_t *client, uint8_t *buf,
                    size_t buf_len)
 {
   struct read_ctx *tctx = (struct read_ctx*)ctx;
-  int compareval;
 
   tctx->msg_cb_visited = true;
   tctx->newest_client = client;
-  compareval = memcmp(buf, tctx->buf + tctx->offset, buf_len);
-  EXPECT_EQ(0, compareval);
-  tctx->offset += buf_len;
+  if (tctx->compare_payload)
+    {
+      int compareval;
+
+      compareval = memcmp(buf, tctx->buf + tctx->offset, buf_len);
+      EXPECT_EQ(0, compareval);
+      tctx->offset += buf_len;
+    }
   tctx->n_messages++;
 }
 
@@ -413,6 +420,7 @@ void *new_conn_cb_for_read(void *ctx, sukat_sock_client_t *client,
   struct read_ctx *tctx = (struct read_ctx *)ctx;
   tctx->newest_client = client;
   EXPECT_EQ(tctx->should_disconnect, disconnect);
+  tctx->connect_visited = true;
   return NULL;
 }
 
@@ -433,6 +441,7 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_read)
   default_params.server = true;
   default_params.caller_ctx = (void *)&tctx;
   tctx.buf = buf;
+  tctx.compare_payload = true;
 
   ctx = sukat_sock_create(&default_params, &default_cbs);
   ASSERT_NE(nullptr, ctx);
@@ -581,6 +590,134 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_read)
    * I'll just do the send caching test in AF_INET */
 
   sukat_sock_disconnect(ctx, client);
+  sukat_sock_destroy(client_ctx);
+  sukat_sock_destroy(ctx);
+}
+
+class sukat_sock_test_inet : public ::testing::Test
+{
+protected:
+  // You can remove any or all of the following functions if its body is empty.
+
+  sukat_sock_test_inet() {
+      // You can do set-up work for each test here.
+  }
+
+  virtual ~sukat_sock_test_inet() {
+      // You can do clean-up work that doesn't throw exceptions here.
+  }
+
+  // If the constructor and destructor are not enough for setting up and
+  // cleaning up each test, you can define the following methods:
+  virtual void SetUp() {
+      memset(&default_cbs, 0, sizeof(default_cbs));
+      memset(&default_params, 0, sizeof(default_params));
+
+      default_cbs.log_cb = test_log_cb;
+
+      default_params.pinet.ip = local_ipv4;
+      default_params.domain = AF_UNSPEC;
+      default_params.type = SOCK_STREAM;
+  }
+
+  virtual void TearDown() {
+      // Code here will be called immediately after each test (right
+      // before the destructor).
+  }
+
+  // Objects declared here can be used by all tests
+  struct sukat_sock_cbs default_cbs;
+  struct sukat_sock_params default_params;
+  const char *local_ipv4 = "127.0.0.1", *local_ipv6 = "::1";
+};
+
+void *inet_conn_cb(void *ctx, sukat_sock_client_t *client,
+                   struct sockaddr_storage *saddr, size_t slen,
+                   bool disconnect)
+{
+  struct read_ctx *tctx = (struct read_ctx *)ctx;
+  tctx->connect_visited = true;
+  tctx->newest_client = client;
+  (void)saddr;
+  (void)slen;
+  EXPECT_EQ(tctx->should_disconnect, disconnect);
+  return NULL;
+}
+
+TEST_F(sukat_sock_test_inet, sukat_sock_test_basic_client_server)
+{
+  sukat_sock_t *ctx, *client_ctx;;
+  char portbuf[strlen("65535") + 1];
+  int err;
+  struct read_ctx tctx = { };
+  sukat_sock_client_t *client = NULL;
+  uint8_t buf[BUFSIZ];
+  struct test_msg *msg = (struct test_msg*)buf;
+  enum sukat_sock_send_return ret;
+  size_t messages_sent = 0;
+  tctx.buf = buf;
+
+  memset(buf, 0, sizeof(buf));
+
+  default_params.server = true;
+  default_params.caller_ctx = &tctx;
+  default_cbs.conn_cb = inet_conn_cb;
+  default_cbs.msg_cb = msg_cb;
+  default_cbs.msg_len_cb = len_cb;
+  ctx = sukat_sock_create(&default_params, &default_cbs);
+  ASSERT_NE(nullptr, ctx);
+
+  EXPECT_NE(0, ctx->sin.sin_port);
+  snprintf(portbuf, sizeof(portbuf), "%hu", ntohs(ctx->sin.sin_port));
+  default_params.server = false;
+  default_params.pinet.port = portbuf;
+
+  client_ctx = sukat_sock_create(&default_params, &default_cbs);
+  ASSERT_NE(nullptr, client_ctx);
+
+  err = sukat_sock_read(ctx, sukat_sock_get_epoll_fd(ctx), EPOLLIN, 0);
+  EXPECT_EQ(0, err);
+  EXPECT_EQ(true, tctx.connect_visited);
+  client = tctx.newest_client;
+
+  tctx.connect_visited = false;
+  err = sukat_sock_read(client_ctx, sukat_sock_get_epoll_fd(client_ctx),
+                        EPOLLIN, 100);
+  EXPECT_EQ(0, err);
+  EXPECT_NE(true, client_ctx->connect_in_progress);
+  EXPECT_NE(true, client_ctx->epollout);
+  EXPECT_EQ(true, tctx.connect_visited);
+  tctx.connect_visited = false;
+
+  /* Lets try to get partial writes/reads */
+  msg->type = 0;
+  msg->len = 5555;
+  while ((ret = sukat_send_msg(ctx, client, buf, msg->len)) == SUKAT_SEND_OK)
+    {
+      messages_sent++;
+    }
+  EXPECT_NE(0, client->write_cache.len);
+  EXPECT_EQ(true, client->epollout);
+
+  err = sukat_sock_read(client_ctx, sukat_sock_get_epoll_fd(client_ctx),
+                        EPOLLIN, 0);
+  EXPECT_EQ(0, err);
+  EXPECT_EQ(tctx.n_messages, messages_sent - 1);
+
+  err = sukat_sock_read(ctx, sukat_sock_get_epoll_fd(ctx), EPOLLIN, 0);
+  EXPECT_EQ(0, err);
+
+  tctx.compare_payload = true;
+  err = sukat_sock_read(client_ctx, sukat_sock_get_epoll_fd(client_ctx),
+                        EPOLLIN, 100);
+  EXPECT_EQ(0, err);
+  EXPECT_EQ(tctx.n_messages, messages_sent);
+
+  sukat_sock_disconnect(ctx, client);
+  err = sukat_sock_read(client_ctx, sukat_sock_get_epoll_fd(client_ctx),
+                        EPOLLIN, 100);
+  EXPECT_EQ(-1, err);
+
   sukat_sock_destroy(client_ctx);
   sukat_sock_destroy(ctx);
 }
