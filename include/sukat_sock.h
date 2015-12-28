@@ -164,8 +164,7 @@ struct sukat_sock_cbs
 sukat_sock_t *sukat_sock_create(struct sukat_sock_params *params,
                                 struct sukat_sock_cbs *cbs);
 
-int sukat_sock_read(sukat_sock_t *ctx, int epoll_fd,
-                    uint32_t events, int timeout);
+int sukat_sock_read(sukat_sock_t *ctx, int timeout);
 
 /*!
  * Fetches the slave epoll fd \p ctx is using.

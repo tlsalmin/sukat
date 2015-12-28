@@ -184,11 +184,11 @@ TEST_F(sukat_sock_test_tipc, sukat_sock_test_tipc)
   client_ctx = sukat_sock_create(&default_params, &default_cbs);
   ASSERT_NE(nullptr, client_ctx);
 
-  err = sukat_sock_read(ctx, sukat_sock_get_epoll_fd(ctx), 0, 0);
+  err = sukat_sock_read(ctx, 0);
   EXPECT_NE(-1, err);
 
   sukat_sock_destroy(client_ctx);
-  err = sukat_sock_read(ctx, sukat_sock_get_epoll_fd(ctx), 0, 0);
+  err = sukat_sock_read(ctx, 0);
   EXPECT_NE(-1, err);
 
   sukat_sock_destroy(ctx);
@@ -303,7 +303,7 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_connect)
   ASSERT_NE(nullptr, ctx);
 
   tctx.connected_should = true;
-  err = sukat_sock_read(ctx, sukat_sock_get_epoll_fd(ctx), 0, 0);
+  err = sukat_sock_read(ctx, 0);
   EXPECT_EQ(0, err);
   EXPECT_EQ(true, tctx.connected_visited);
   EXPECT_EQ(2, ctx->n_connections);
@@ -312,7 +312,7 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_connect)
   sukat_sock_destroy(client_ctx);
 
   tctx.connected_should = tctx.connected_should_disconnect = true;
-  err = sukat_sock_read(ctx, sukat_sock_get_epoll_fd(ctx), 0, 0);
+  err = sukat_sock_read(ctx, 0);
   EXPECT_EQ(0, err);
   EXPECT_EQ(true, tctx.connected_visited);
   tctx.connected_should = tctx.connected_visited =
@@ -330,7 +330,7 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_connect)
           EXPECT_NE(nullptr, clients[i]);
         }
       tctx.connected_should = true;
-      err = sukat_sock_read(ctx, sukat_sock_get_epoll_fd(ctx), 0, 0);
+      err = sukat_sock_read(ctx, 0);
       EXPECT_NE(-1, err);
       EXPECT_EQ(true, tctx.connected_visited);
       EXPECT_EQ(n_clients + 1, ctx->n_connections);
@@ -342,7 +342,7 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_connect)
           sukat_sock_destroy(clients[i]);
         }
       tctx.connected_should = tctx.connected_should_disconnect = true;
-      err = sukat_sock_read(ctx, sukat_sock_get_epoll_fd(ctx), 0, 0);
+      err = sukat_sock_read(ctx, 0);
       EXPECT_NE(-1, err);
       EXPECT_EQ(true, tctx.connected_visited);
       EXPECT_EQ(n_clients, tctx.n_disconnects);
@@ -450,7 +450,7 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_read)
   client_ctx = sukat_sock_create(&default_params, &default_cbs);
   ASSERT_NE(nullptr, client_ctx);
 
-  err = sukat_sock_read(ctx, sukat_sock_get_epoll_fd(ctx), EPOLLIN, 0);
+  err = sukat_sock_read(ctx, 0);
   EXPECT_EQ(0, err);
   EXPECT_EQ(2, ctx->n_connections);
   client = tctx.newest_client;
@@ -463,7 +463,7 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_read)
   EXPECT_EQ(SUKAT_SEND_OK, send_ret);
 
   tctx.len_cb_should_visit = tctx.msg_cb_should_visit = true;
-  err = sukat_sock_read(ctx, sukat_sock_get_epoll_fd(ctx), EPOLLIN, 0);
+  err = sukat_sock_read(ctx, 0);
   EXPECT_EQ(0, err);
   EXPECT_EQ(true, tctx.len_cb_visited);
   EXPECT_EQ(true, tctx.msg_cb_visited);
@@ -474,8 +474,7 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_read)
   EXPECT_EQ(SUKAT_SEND_OK, send_ret);
 
   tctx.len_cb_visited = tctx.msg_cb_visited = false;
-  err = sukat_sock_read(client_ctx, sukat_sock_get_epoll_fd(client_ctx),
-                        EPOLLIN, 0);
+  err = sukat_sock_read(client_ctx, 0);
   EXPECT_EQ(0, err);
   EXPECT_EQ(true, tctx.len_cb_visited);
   EXPECT_EQ(true, tctx.msg_cb_visited);
@@ -489,8 +488,7 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_read)
   send_ret = sukat_send_msg(ctx, client, buf, sizeof(*msg) / 2);
   EXPECT_EQ(SUKAT_SEND_OK, send_ret);
 
-  err = sukat_sock_read(client_ctx, sukat_sock_get_epoll_fd(client_ctx),
-                        EPOLLIN, 0);
+  err = sukat_sock_read(client_ctx, 0);
   EXPECT_EQ(0, err);
   EXPECT_EQ(true, tctx.len_cb_visited);
   EXPECT_EQ(false, tctx.msg_cb_visited);
@@ -502,8 +500,7 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_read)
   EXPECT_EQ(SUKAT_SEND_OK, send_ret);
 
   tctx.msg_cb_should_visit = true;
-  err = sukat_sock_read(client_ctx, sukat_sock_get_epoll_fd(client_ctx),
-                        EPOLLIN, 0);
+  err = sukat_sock_read(client_ctx, 0);
   EXPECT_EQ(0, err);
   EXPECT_EQ(true, tctx.len_cb_visited);
   EXPECT_EQ(true, tctx.msg_cb_visited);
@@ -520,8 +517,7 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_read)
   EXPECT_EQ(SUKAT_SEND_OK, send_ret);
 
   tctx.msg_cb_should_visit = false;
-  err = sukat_sock_read(client_ctx, sukat_sock_get_epoll_fd(client_ctx),
-                        EPOLLIN, 0);
+  err = sukat_sock_read(client_ctx, 0);
   EXPECT_EQ(0, err);
   EXPECT_EQ(true, tctx.len_cb_visited);
   EXPECT_EQ(false, tctx.msg_cb_visited);
@@ -533,8 +529,7 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_read)
   EXPECT_EQ(SUKAT_SEND_OK, send_ret);
 
   tctx.msg_cb_should_visit = true;
-  err = sukat_sock_read(client_ctx, sukat_sock_get_epoll_fd(client_ctx),
-                        EPOLLIN, 0);
+  err = sukat_sock_read(client_ctx, 0);
   EXPECT_EQ(0, err);
   EXPECT_EQ(true, tctx.len_cb_visited);
   EXPECT_EQ(true, tctx.msg_cb_visited);
@@ -557,8 +552,7 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_read)
   tctx.n_messages = 0;
   tctx.msg_cb_should_visit = tctx.len_cb_should_visit = true;
 
-  err = sukat_sock_read(client_ctx, sukat_sock_get_epoll_fd(client_ctx),
-                        EPOLLIN, 0);
+  err = sukat_sock_read(client_ctx, 0);
   EXPECT_EQ(0, err);
   EXPECT_EQ(true, tctx.len_cb_visited);
   EXPECT_EQ(true, tctx.msg_cb_visited);
@@ -592,6 +586,210 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_read)
   sukat_sock_disconnect(ctx, client);
   sukat_sock_destroy(client_ctx);
   sukat_sock_destroy(ctx);
+}
+
+struct cb_disco_ctx
+{
+  sukat_sock_t *ctx;
+  sukat_sock_client_t *client;
+  bool disco_in_len;
+  bool disco_in_conn;
+  bool disco_in_msg;
+  bool destroy_in_len;
+  bool destroy_in_conn;
+  bool destroy_in_msg;
+  int ret;
+};
+
+int len_cb_disconnects(void *ctx,
+                       __attribute__((unused)) uint8_t *buf,
+                       __attribute__((unused)) size_t buf_len)
+{
+  struct cb_disco_ctx *tctx = (struct cb_disco_ctx *)ctx;
+
+  EXPECT_NE(nullptr, tctx);
+  if (tctx->disco_in_len)
+    {
+      EXPECT_NE(nullptr, tctx->client);
+      sukat_sock_disconnect(tctx->ctx, tctx->client);
+      tctx->client = NULL;
+    }
+  if (tctx->destroy_in_len)
+    {
+      sukat_sock_destroy(tctx->ctx);
+    }
+  return tctx->ret;
+}
+
+void *disco_conn_cb(void *ctx, sukat_sock_client_t *client,
+                    __attribute__((unused)) struct sockaddr_storage *saddr,
+                    __attribute__((unused)) size_t sock_len,
+                    __attribute__((unused)) bool disconnect)
+{
+  struct cb_disco_ctx *tctx = (struct cb_disco_ctx *)ctx;
+
+  EXPECT_NE(nullptr, tctx);
+  tctx->client = client;
+  if (tctx->disco_in_conn)
+    {
+      EXPECT_NE(nullptr, tctx->client);
+      sukat_sock_disconnect(tctx->ctx, client);
+      tctx->client = NULL;
+    }
+  if (tctx->destroy_in_conn)
+    {
+      sukat_sock_destroy(tctx->ctx);
+    }
+  tctx->client = client;
+  return NULL;
+}
+
+void disco_msg_cb(void *ctx, sukat_sock_client_t *client,
+                  __attribute__((unused)) uint8_t *buf,
+                  __attribute__((unused)) size_t buf_len)
+{
+  struct cb_disco_ctx *tctx = (struct cb_disco_ctx *)ctx;
+
+  EXPECT_NE(nullptr, tctx);
+  if (tctx->disco_in_msg)
+    {
+      EXPECT_NE(nullptr, tctx->client);
+      sukat_sock_disconnect(tctx->ctx, client);
+      tctx->client = NULL;
+    }
+  if (tctx->destroy_in_msg)
+    {
+      sukat_sock_destroy(tctx->ctx);
+    }
+}
+
+TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_removal_in_cb)
+{
+  sukat_sock_t *server, *client;
+  struct cb_disco_ctx tctx= { };
+  int err;
+  uint8_t msg[512];
+
+  memset(msg, 0, sizeof(msg));
+  default_cbs.conn_cb = disco_conn_cb;
+  default_cbs.msg_cb = disco_msg_cb;
+  default_cbs.msg_len_cb = len_cb_disconnects;
+  default_params.server = true;
+  default_params.caller_ctx = &tctx;
+  server = sukat_sock_create(&default_params, &default_cbs);
+  ASSERT_NE(nullptr, server);
+  tctx.ctx = server;
+
+  default_params.server = false;
+  client = sukat_sock_create(&default_params, &default_cbs);
+  ASSERT_NE(nullptr, client);
+
+  // First disco in conn
+  tctx.disco_in_conn = true;
+  err = sukat_sock_read(server, 0);
+  EXPECT_EQ(0, err);
+  EXPECT_EQ(1, server->n_connections);
+  sukat_sock_destroy(client);
+
+  // Disco in len_cb
+  tctx.disco_in_conn = false;
+  tctx.disco_in_len = true;
+
+  client = sukat_sock_create(&default_params, &default_cbs);
+  ASSERT_NE(nullptr, client);
+  err = sukat_sock_read(server, 0);
+  EXPECT_EQ(0, err);
+  EXPECT_EQ(2, server->n_connections);
+
+  err = sukat_send_msg(client, NULL, msg, sizeof(msg));
+  EXPECT_EQ(SUKAT_SEND_OK, err);
+
+  err = sukat_sock_read(server, 0);
+  EXPECT_EQ(0, err);
+  EXPECT_EQ(1, server->n_connections);
+
+  err = sukat_sock_read(client, 0);
+  EXPECT_EQ(ERR_FATAL, err);
+  sukat_sock_destroy(client);
+
+  // Disco in msg_cb
+  tctx.disco_in_len = false;
+  tctx.disco_in_msg = true;
+
+  client = sukat_sock_create(&default_params, &default_cbs);
+  ASSERT_NE(nullptr, client);
+  err = sukat_sock_read(server, 0);
+  EXPECT_EQ(0, err);
+  EXPECT_EQ(2, server->n_connections);
+
+  err = sukat_send_msg(client, NULL, msg, sizeof(msg));
+  EXPECT_EQ(SUKAT_SEND_OK, err);
+
+  tctx.ret = sizeof(msg);
+  err = sukat_sock_read(server, 0);
+  EXPECT_EQ(0, err);
+  EXPECT_EQ(1, server->n_connections);
+
+  err = sukat_sock_read(client, 0);
+  EXPECT_EQ(ERR_FATAL, err);
+  sukat_sock_destroy(client);
+  tctx.disco_in_msg = false;
+
+  // same for destroys.
+  tctx.ctx = server;
+
+  client = sukat_sock_create(&default_params, &default_cbs);
+  ASSERT_NE(nullptr, client);
+
+  tctx.destroy_in_conn = tctx.disco_in_conn = true;
+  err = sukat_sock_read(server, 0);
+  EXPECT_EQ(0, err);
+
+  sukat_sock_destroy(client);
+
+  // Destroy in conn_cb
+  get_random_socket();
+  tctx.destroy_in_conn = tctx.disco_in_conn = false;
+  default_params.server = true;
+  server = sukat_sock_create(&default_params, &default_cbs);
+  ASSERT_NE(nullptr, server);
+
+  tctx.ctx = server;
+  default_params.server = false;
+  client = sukat_sock_create(&default_params, &default_cbs);
+  ASSERT_NE(nullptr, client);
+
+  // Destroy in len_cb
+  tctx.disco_in_len = tctx.destroy_in_len = true;
+  err = sukat_send_msg(client, NULL, msg, sizeof(msg));
+  EXPECT_EQ(SUKAT_SEND_OK, err);
+
+  err = sukat_sock_read(server, 0);
+  EXPECT_EQ(0, err);
+
+  sukat_sock_destroy(client);
+  tctx.disco_in_len = tctx.destroy_in_len = false;
+
+  get_random_socket();
+  default_params.server = true;
+  server = sukat_sock_create(&default_params, &default_cbs);
+  ASSERT_NE(nullptr, server);
+
+  // Destroy in msg_cb.
+  tctx.ctx = server;
+  default_params.server = false;
+  client = sukat_sock_create(&default_params, &default_cbs);
+  ASSERT_NE(nullptr, client);
+
+  tctx.disco_in_msg = tctx.destroy_in_msg = true;
+  err = sukat_send_msg(client, NULL, msg, sizeof(msg));
+  EXPECT_EQ(SUKAT_SEND_OK, err);
+
+  err = sukat_sock_read(server, 0);
+  EXPECT_EQ(0, err);
+
+  sukat_sock_destroy(client);
+  tctx.disco_in_msg = tctx.destroy_in_msg = false;
 }
 
 class sukat_sock_test_inet : public ::testing::Test
@@ -666,6 +864,8 @@ TEST_F(sukat_sock_test_inet, sukat_sock_test_basic_client_server)
   default_cbs.msg_len_cb = len_cb;
   ctx = sukat_sock_create(&default_params, &default_cbs);
   ASSERT_NE(nullptr, ctx);
+  EXPECT_EQ(AF_INET, ctx->domain);
+  EXPECT_EQ(SOCK_STREAM, ctx->type);
 
   EXPECT_NE(0, ctx->sin.sin_port);
   snprintf(portbuf, sizeof(portbuf), "%hu", ntohs(ctx->sin.sin_port));
@@ -674,15 +874,16 @@ TEST_F(sukat_sock_test_inet, sukat_sock_test_basic_client_server)
 
   client_ctx = sukat_sock_create(&default_params, &default_cbs);
   ASSERT_NE(nullptr, client_ctx);
+  EXPECT_EQ(AF_INET, client_ctx->domain);
+  EXPECT_EQ(SOCK_STREAM, client_ctx->type);
 
-  err = sukat_sock_read(ctx, sukat_sock_get_epoll_fd(ctx), EPOLLIN, 0);
+  err = sukat_sock_read(ctx, 0);
   EXPECT_EQ(0, err);
   EXPECT_EQ(true, tctx.connect_visited);
   client = tctx.newest_client;
 
   tctx.connect_visited = false;
-  err = sukat_sock_read(client_ctx, sukat_sock_get_epoll_fd(client_ctx),
-                        EPOLLIN, 100);
+  err = sukat_sock_read(client_ctx, 100);
   EXPECT_EQ(0, err);
   EXPECT_NE(true, client_ctx->connect_in_progress);
   EXPECT_NE(true, client_ctx->epollout);
@@ -699,25 +900,56 @@ TEST_F(sukat_sock_test_inet, sukat_sock_test_basic_client_server)
   EXPECT_NE(0, client->write_cache.len);
   EXPECT_EQ(true, client->epollout);
 
-  err = sukat_sock_read(client_ctx, sukat_sock_get_epoll_fd(client_ctx),
-                        EPOLLIN, 0);
+  err = sukat_sock_read(client_ctx, 0);
   EXPECT_EQ(0, err);
   EXPECT_EQ(tctx.n_messages, messages_sent - 1);
 
-  err = sukat_sock_read(ctx, sukat_sock_get_epoll_fd(ctx), EPOLLIN, 0);
+  err = sukat_sock_read(ctx, 0);
   EXPECT_EQ(0, err);
 
   tctx.compare_payload = true;
-  err = sukat_sock_read(client_ctx, sukat_sock_get_epoll_fd(client_ctx),
-                        EPOLLIN, 100);
+  err = sukat_sock_read(client_ctx, 100);
   EXPECT_EQ(0, err);
   EXPECT_EQ(tctx.n_messages, messages_sent);
 
   sukat_sock_disconnect(ctx, client);
-  err = sukat_sock_read(client_ctx, sukat_sock_get_epoll_fd(client_ctx),
-                        EPOLLIN, 100);
+  err = sukat_sock_read(client_ctx, 100);
   EXPECT_EQ(-1, err);
 
   sukat_sock_destroy(client_ctx);
   sukat_sock_destroy(ctx);
+}
+
+TEST_F(sukat_sock_test_inet, sukat_sock_test_ipv6)
+{
+  sukat_sock_t *server, *client;
+  char portbuf[strlen("65535") + 1];
+  int err;
+
+  default_params.server = true;
+  default_params.pinet.ip = local_ipv6;
+  default_params.type = SOCK_DGRAM;
+
+  server = sukat_sock_create(&default_params, &default_cbs);
+  ASSERT_NE(nullptr, server);
+  EXPECT_EQ(AF_INET6, server->domain);
+  EXPECT_EQ(SOCK_DGRAM, server->type);
+
+  EXPECT_NE(0, server->sin.sin_port);
+  snprintf(portbuf, sizeof(portbuf), "%hu", ntohs(server->sin6.sin6_port));
+  default_params.server = false;
+  default_params.pinet.port = portbuf;
+
+  client = sukat_sock_create(&default_params, &default_cbs);
+  ASSERT_NE(nullptr, client);
+  EXPECT_EQ(AF_INET6, client->domain);
+  EXPECT_EQ(SOCK_DGRAM, client->type);
+
+  err = sukat_sock_read(server, 0);
+  EXPECT_EQ(0, err);
+
+  sukat_sock_destroy(client);
+  err = sukat_sock_read(server, 0);
+  EXPECT_EQ(0, err);
+  sukat_sock_destroy(server);
 }
