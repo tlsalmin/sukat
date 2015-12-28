@@ -3,7 +3,7 @@
  * @brief Socket implentation for sukat API.
  *
  * @defgroup sukat_sock
- * @ingropup sukat_api
+ * @ingroup sukat_api
  * @{
  *
  * sukat API can be used to create socket servers and clients with a small

@@ -667,14 +667,28 @@ static void client_close(sukat_sock_t *ctx, sukat_sock_client_t *client)
   free(client);
 }
 
-static void server_accept_cb(sukat_sock_t *ctx)
+typedef enum event_handling_ret
+{
+  ERR_FATAL = -1,
+  ERR_OK = 0,
+  ERR_BREAK = 1,
+} ret_t;
+
+/*!
+ * Accept client connections until blocked
+ *
+ * @param ctx   Sukat context.
+ *
+ * @return ERR_OK    Success.
+ * @return ERR_FATAL Fatal error.
+ */
+static ret_t server_accept_cb(sukat_sock_t *ctx)
 {
   struct sockaddr_storage saddr;
   socklen_t slen = sizeof(saddr);
   int fd;
 
-  fd = accept(ctx->fd, (struct sockaddr *)&saddr, &slen);
-  if (fd >= 0)
+  while ((fd = accept(ctx->fd, (struct sockaddr *)&saddr, &slen)) >= 0)
     {
       if (set_flags(ctx, fd) == true)
         {
@@ -693,22 +707,20 @@ static void server_accept_cb(sukat_sock_t *ctx)
                   USE_CB_WRET(ctx, client, client->client_caller_ctx, conn_cb,
                               ctx->caller_ctx, client, &saddr, slen, false);
                   ctx->n_connections++;
-                  return;
+                  continue;
                 }
               free(client);
             }
         }
       close(fd);
     }
-  ERR(ctx, "Failed to accept: %s", strerror(errno));
+  if (!(fd == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)))
+    {
+      ERR(ctx, "Failed to accept: %s", strerror(errno));
+      return ERR_FATAL;
+    }
+  return ERR_BREAK;
 }
-
-typedef enum event_handling_ret
-{
-  ERR_FATAL = -1,
-  ERR_OK = 0,
-  ERR_BREAK = 1,
-} ret_t;
 
 static ret_t client_continue_connect(sukat_sock_t *ctx)
 {
@@ -974,6 +986,8 @@ static void event_non_epollin(sukat_sock_t *ctx,
 
 static ret_t event_handle(sukat_sock_t *ctx, struct epoll_event *event)
 {
+  ret_t ret = ERR_OK;
+
   if (event->data.ptr == (void *)ctx)
     {
       if (event->events != EPOLLIN && event->events != EPOLLOUT)
@@ -981,24 +995,22 @@ static ret_t event_handle(sukat_sock_t *ctx, struct epoll_event *event)
           event_non_epollin(ctx, NULL, event->events);
           return ERR_FATAL;
         }
-      if (!ctx->is_server && ctx->connect_in_progress)
+      else if (!ctx->is_server && ctx->connect_in_progress)
         {
-          ret_t ret = client_continue_connect(ctx);
-
-          if (ret != ERR_OK)
-            {
-              return ret;
-            }
+          ret = client_continue_connect(ctx);
         }
       else if (ctx->is_server)
         {
-          server_accept_cb(ctx);
+          ret = server_accept_cb(ctx);
         }
       else
         {
           if (event->events == EPOLLOUT && ctx->write_cache.len > 0)
             {
-              send_cached(ctx, NULL);
+              if (send_cached(ctx, NULL) != SUKAT_SEND_OK)
+                {
+                  return ERR_BREAK;
+                }
             }
           else
             {
@@ -1037,7 +1049,6 @@ static ret_t event_handle(sukat_sock_t *ctx, struct epoll_event *event)
             }
           else
             {
-              ret_t ret;
               ret = event_read(ctx, client);
 
               if (ret != ERR_OK || client->destroyed)
@@ -1049,7 +1060,7 @@ static ret_t event_handle(sukat_sock_t *ctx, struct epoll_event *event)
         }
     }
 
-  return ERR_OK;
+  return ret;
 }
 
 /* TODO: Not sure if events can be other than EPOLLIN if the slave
@@ -1082,26 +1093,22 @@ int sukat_sock_read(sukat_sock_t *ctx, int epoll_fd,
           ret = ERR_FATAL;
           goto out;
         }
-      for (i = 0; i < (size_t)nfds; i++)
+      for (i = 0; i < (size_t)nfds && ret == ERR_OK ; i++)
         {
           ret = event_handle(ctx, &new_events[i]);
-          if (ret == ERR_FATAL)
-            {
-              goto out;
-            }
-          else if (ret == ERR_BREAK)
-            {
-              ret = ERR_OK;
-              goto out;
-            }
         }
       if (timeout > 0)
         {
           timeout = 0;
         }
-    } while (nfds > 0 && ctx->destroyed != true && ctx->n_connections > 0);
+    } while (nfds > 0 && ctx->destroyed != true && ctx->n_connections > 0 &&
+             ret != ERR_FATAL);
 
 out:
+  if (ret == ERR_BREAK)
+    {
+      ret = ERR_OK;
+    }
   if (ctx->destroyed)
     {
       sukat_sock_destroy(ctx);
