@@ -13,11 +13,10 @@
 #include "sukat_bgp.h"
 #include "sukat_log_internal.h"
 #include "sukat_sock.h"
+#include "delayed_destruction.h"
 
 struct sukat_bgp_ctx_t
 {
-  uint16_t my_as;
-  uint32_t bgp_id;
   struct sukat_bgp_cbs cbs;
   sukat_sock_t *sock_ctx;
   void *caller_ctx;
@@ -27,11 +26,15 @@ struct sukat_bgp_ctx_t
       uint8_t server:1; //!< True if we're a server.
       uint8_t unused:5;
   } flags;
+  destro_t *destro_ctx;
   uint16_t hold_time;
+  uint16_t my_as;
+  uint32_t bgp_id;
 };
 
 struct sukat_bgp_client_ctx
 {
+  destro_client_t destro_client_ctx;
   sukat_sock_client_t *sock_client;
   struct {
       uint8_t opened:1; //!< True if we have received a BGP_MSG_OPEN.
@@ -297,6 +300,22 @@ static void *bgp_conn_cb(void *caller_ctx, sukat_sock_client_t *sock_client,
   return NULL;
 }
 
+void bgp_destro_close(void *main_ctx, void *client_ctx)
+{
+  sukat_bgp_t *ctx = (sukat_bgp_t *)main_ctx;
+
+  if (client_ctx)
+    {
+      sukat_bgp_client_t *client = (sukat_bgp_client_t *)client_ctx;
+
+      sukat_sock_disconnect(ctx->sock_ctx, client->sock_client);
+    }
+  else
+    {
+      sukat_sock_destroy(ctx->sock_ctx);
+    }
+}
+
 sukat_bgp_t *sukat_bgp_create(struct sukat_bgp_params *params,
                               struct sukat_bgp_cbs *cbs)
 {
@@ -343,9 +362,21 @@ sukat_bgp_t *sukat_bgp_create(struct sukat_bgp_params *params,
       ctx->sock_ctx = sukat_sock_create(&sock_params, &sock_cbs);
       if (ctx->sock_ctx)
         {
-          LOG(ctx, "Created bgp %s context",
-              (ctx->flags.server) ? "server" : "client");
-          return ctx;
+          struct destro_cbs dcbs = { };
+          struct destro_params dparams = { };
+
+          dparams.main_ctx = (void *)ctx;
+          dcbs.log_cb = (cbs) ? cbs->log_cb : NULL;
+          dcbs.close = bgp_destro_close;
+
+          ctx->destro_ctx = destro_create(&dparams, &dcbs);
+          if (ctx->destro_ctx)
+            {
+              LOG(ctx, "Created bgp %s context",
+                  (ctx->flags.server) ? "server" : "client");
+              return ctx;
+            }
+          sukat_sock_destroy(ctx->sock_ctx);
         }
       free(ctx);
     }
@@ -354,33 +385,28 @@ sukat_bgp_t *sukat_bgp_create(struct sukat_bgp_params *params,
 
 int sukat_bgp_read(sukat_bgp_t *ctx, int timeout)
 {
-  return sukat_sock_read(ctx->sock_ctx, timeout);
+  int ret;
+
+  destro_cb_enter(ctx->destro_ctx);
+  ret = sukat_sock_read(ctx->sock_ctx, timeout);
+  destro_cb_exit(ctx->destro_ctx);
+
+  return ret;
 };
 
 void sukat_bgp_destroy(sukat_bgp_t *ctx)
 {
   if (ctx)
     {
-      if (ctx->sock_ctx)
-        {
-          sukat_sock_destroy(ctx->sock_ctx);
-        }
-      free(ctx);
+      destro_delete(ctx->destro_ctx, NULL);
     }
-}
-
-void sukat_bgp_client_close(sukat_bgp_t *ctx, sukat_bgp_client_t *client)
-{
-  sukat_sock_disconnect(ctx->sock_ctx, client->sock_client);
 }
 
 void sukat_bgp_disconnect(sukat_bgp_t *ctx, sukat_bgp_client_t *client)
 {
   if (ctx && client)
     {
-      // TODO we need a destructor-helper.
-      sukat_bgp_client_close(ctx, client);
-      free(client);
+      destro_delete(ctx->destro_ctx, &client->destro_client_ctx);
     }
 }
 
