@@ -454,6 +454,15 @@ static int socket_create_hinted(sukat_sock_t *ctx, struct addrinfo *p,
               goto fail;
             }
         }
+      else
+        {
+          if (ctx->cbs.conn_cb)
+            {
+              USE_CB(ctx, conn_cb,ctx->caller_ctx, NULL,
+                     (struct sockaddr_storage *)p->ai_addr,
+                     p->ai_addrlen, false);
+            }
+        }
     }
   return fd;
 fail:
@@ -1028,7 +1037,7 @@ static ret_t event_handle(sukat_sock_t *ctx, struct epoll_event *event)
 
   if (event->data.ptr == (void *)ctx)
     {
-      if (event->events != EPOLLIN && event->events != EPOLLOUT)
+      if (event->events & !(EPOLLIN | EPOLLOUT))
         {
           event_non_epollin(ctx, NULL, event->events);
           return ERR_FATAL;
@@ -1043,7 +1052,7 @@ static ret_t event_handle(sukat_sock_t *ctx, struct epoll_event *event)
         }
       else
         {
-          if (event->events == EPOLLOUT && ctx->write_cache.len > 0)
+          if ((event->events & EPOLLOUT) && ctx->write_cache.len > 0)
             {
               if (send_cached(ctx, NULL) == SUKAT_SEND_ERROR)
                 {
@@ -1062,14 +1071,14 @@ static ret_t event_handle(sukat_sock_t *ctx, struct epoll_event *event)
 
       if (!client->closed)
         {
-          if (event->events != EPOLLIN && event->events != EPOLLOUT)
+          if (event->events & !(EPOLLIN | EPOLLOUT))
             {
               event_non_epollin(ctx, client, event->events);
               client_close(ctx, client);
             }
           else
             {
-              if (event->events == EPOLLOUT)
+              if (event->events & EPOLLOUT)
                 {
                   if (client->write_cache.len == 0)
                     {
@@ -1090,6 +1099,7 @@ static ret_t event_handle(sukat_sock_t *ctx, struct epoll_event *event)
                   if (ret != ERR_OK || client->destroyed)
                     {
                       client_close(ctx, client);
+                      ret = ERR_BREAK;
                     }
                 }
             }
@@ -1425,6 +1435,16 @@ char *sukat_sock_stringify_peer(struct sockaddr_storage *saddr, size_t sock_len,
       return buf;
     }
   return NULL;
+}
+
+uint16_t sukat_sock_get_port(sukat_sock_t *ctx)
+{
+  if (ctx->domain == AF_INET || ctx->domain == AF_INET6)
+    {
+      return ntohs(ctx->sin.sin_port);
+    }
+  ERR(ctx, "Port asked for type %d", ctx->domain);
+  return 0;
 }
 
 /*! }@ */

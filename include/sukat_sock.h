@@ -246,6 +246,16 @@ enum sukat_sock_send_return sukat_send_msg(sukat_sock_t *ctx,
 char *sukat_sock_stringify_peer(struct sockaddr_storage *saddr, size_t sock_len,
                                 char *buf, size_t buf_len);
 
+/*!
+ * Returns the port in host byte order from a AF_INET or AF_INET6 socket.
+ *
+ * @param ctx   Socket context.
+ *
+ * @return > 0  Port.
+ * @return 0    Wrong domain.
+ */
+uint16_t sukat_sock_get_port(sukat_sock_t *ctx);
+
 #endif /* SUKAT_SOCK_H */
 
 /*! @} */
