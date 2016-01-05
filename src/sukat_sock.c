@@ -29,6 +29,7 @@
 #include "sukat_sock.h"
 #include "sukat_log_internal.h"
 #include "sukat_drawer.h"
+#include "delayed_destruction.h"
 
 /*!
  * Structure used to store either partially sent data or partially received
@@ -42,6 +43,7 @@ struct rw_cache
 
 struct sukat_sock_client_ctx
 {
+  destro_client_t destro_client_ctx;
   int fd; //!< Accepted fd.
   void *client_caller_ctx; //!< Specific context if set. Otherwise NULL.
   struct {
@@ -65,8 +67,6 @@ struct sukat_sock_ctx
   struct {
       uint8_t connect_in_progress:1; //! If set, a connect returned EINPROCESS
       uint8_t is_server:1; //!< True for server operation.
-      uint8_t in_callback:1; //!< If true, don't destroy oneself immediately.
-      uint8_t destroyed:1; //!< If true, don't destroy oneself immediately.
       uint8_t epollout:1; //!< If true, we're also waiting for epollout.
   };
   size_t n_connections;
@@ -83,16 +83,11 @@ struct sukat_sock_ctx
       struct sockaddr saddr;
     };
   socklen_t slen;
-  union {
-      struct {
-          struct rw_cache read_cache;
-          struct rw_cache write_cache;
-      };
-      struct {
-          sukat_sock_client_t *deleted_head;
-          sukat_sock_client_t *deleted_tail;
-      };
+  struct {
+      struct rw_cache read_cache;
+      struct rw_cache write_cache;
   };
+  destro_t *destro_ctx;
 };
 
 #define USE_CB(_ctx, _cb, ...)                                                \
@@ -100,11 +95,7 @@ struct sukat_sock_ctx
     {                                                                         \
       if (_ctx && _ctx->cbs._cb)                                              \
         {                                                                     \
-          bool old_value = _ctx->in_callback;                                 \
-                                                                              \
-          _ctx->in_callback = true;                                           \
           _ctx->cbs._cb(__VA_ARGS__);                                         \
-          _ctx->in_callback = old_value;                                      \
         }                                                                     \
     }                                                                         \
   while (0)
@@ -114,11 +105,7 @@ struct sukat_sock_ctx
     {                                                                         \
       if (_ctx && _ctx->cbs._cb)                                              \
         {                                                                     \
-          bool old_value = _ctx->in_callback;                                 \
-                                                                              \
-          _ctx->in_callback = true;                                           \
           _ret = _ctx->cbs._cb(__VA_ARGS__);                                  \
-          _ctx->in_callback = old_value;                                      \
         }                                                                     \
     }                                                                         \
   while (0)
@@ -225,9 +212,11 @@ static char *socket_log_saddr(sukat_sock_t *ctx, char *buf, size_t buf_len)
     {
     case AF_UNIX:
       SAFEPUT("UNIX %s", ctx->sun.sun_path);
+      break;
     case AF_TIPC:
       SAFEPUT("TIPC port_type %u instance %u", ctx->stipc.addr.nameseq.type,
               ctx->stipc.addr.nameseq.lower);
+      break;
     case AF_INET:
     case AF_INET6:
       SAFEPUT("IPv%d IP %s port %hu", (ctx->domain == AF_INET) ? 4 : 6,
@@ -648,46 +637,57 @@ static void *get_caller_ctx(sukat_sock_t *ctx, sukat_sock_client_t *client)
   return ctx->caller_ctx;
 }
 
-static void client_close(sukat_sock_t *ctx, sukat_sock_client_t *client)
+static void sock_destro_close(void *main_ctx, void *client_ctx)
 {
-  uint32_t events = EPOLLIN;
-  void *caller_ctx = get_caller_ctx(ctx, client);
+  sukat_sock_t *ctx = (sukat_sock_t *)main_ctx;
+  sukat_sock_client_t *client = (sukat_sock_client_t *)client_ctx;
 
-  if (client->closed)
+  if (client)
     {
-      return;
-    }
-  LOG(ctx, "Removing client %d", client->fd);
-  if (client->epollout)
-    {
-      events |= EPOLLOUT;
-    }
-  event_ctl(ctx->epoll_fd, client->fd, NULL, EPOLL_CTL_DEL, events);
-  free_cache(&client->read_cache);
-  free_cache(&client->write_cache);
-  close(client->fd);
-  if (!client->destroyed)
-    {
-      USE_CB(ctx, conn_cb, caller_ctx, client, NULL, 0, true);
-    }
-  ctx->n_connections--;
-  if (!ctx->in_callback)
-    {
-      free(client);
+      uint32_t events = EPOLLIN;
+      void *caller_ctx = get_caller_ctx(ctx, client);
+
+      if (client->closed)
+        {
+          return;
+        }
+      LOG(ctx, "Removing client %d", client->fd);
+      if (client->epollout)
+        {
+          events |= EPOLLOUT;
+        }
+      event_ctl(ctx->epoll_fd, client->fd, NULL, EPOLL_CTL_DEL, events);
+      free_cache(&client->read_cache);
+      free_cache(&client->write_cache);
+      close(client->fd);
+      if (!client->destroyed)
+        {
+          USE_CB(ctx, conn_cb, caller_ctx, client, NULL, 0, true);
+        }
+      ctx->n_connections--;
     }
   else
     {
-      client->closed = true;
-      if (!ctx->deleted_tail)
+      LOG(ctx, "Removing main sock context");
+      if (ctx->fd >= 0)
         {
-          assert(!ctx->deleted_head);
-          ctx->deleted_head = ctx->deleted_tail = client;
+          close(ctx->fd);
+          ctx->n_connections--;
         }
-      else
+      if (ctx->master_epoll_fd != -1)
         {
-          ctx->deleted_tail->next = client;
-          ctx->deleted_tail = client;
+          if (event_ctl(ctx->master_epoll_fd, ctx->epoll_fd, ctx, EPOLL_CTL_DEL,
+                        EPOLLIN) != true) {
+              ERR(ctx, "Failed to remove epoll_fd from master fd: %s",
+                  strerror(errno));
+          }
         }
+      if (ctx->epoll_fd > 0)
+        {
+          close(ctx->epoll_fd);
+        }
+      free_cache(&ctx->read_cache);
+      free_cache(&ctx->write_cache);
     }
 }
 
@@ -731,7 +731,7 @@ static ret_t server_accept_cb(sukat_sock_t *ctx)
   socklen_t slen = sizeof(saddr);
   int fd;
 
-  while (ctx->destroyed != true &&
+  while (destro_is_deleted(ctx->destro_ctx, NULL) != true &&
          (fd = accept(ctx->fd, (struct sockaddr *)&saddr, &slen)) >= 0)
     {
       if (set_flags(ctx, fd) == true)
@@ -797,11 +797,8 @@ static ret_t client_continue_connect(sukat_sock_t *ctx)
 static bool keep_going(sukat_sock_t *ctx,
                        sukat_sock_client_t *client)
 {
-  if (ctx->destroyed || (client && client->destroyed))
-    {
-      return false;
-    }
-  return true;
+  return !destro_is_deleted(ctx->destro_ctx,
+                            (client) ? &client->destro_client_ctx : NULL);
 }
 
 #define BUF_LEFT (sizeof(buf) - n_read)
@@ -854,7 +851,7 @@ static ret_t read_stream(sukat_sock_t *ctx, sukat_sock_client_t *client)
 
               USE_CB_WRET(ctx, msg_len_query, msg_len_cb, caller_ctx,
                           buf + processed, UNPROCESSED);
-              if (ctx->destroyed || (client && client->destroyed))
+              if (!keep_going(ctx, client))
                 {
                   return ERR_OK;
                 }
@@ -904,23 +901,6 @@ static ret_t read_stream(sukat_sock_t *ctx, sukat_sock_client_t *client)
     }
 
   return ERR_OK;
-}
-
-static void clients_free_deleted(sukat_sock_t *ctx)
-{
-  assert(ctx != NULL);
-  if (!ctx->is_server)
-    {
-      return;
-    }
-  while (ctx->deleted_head)
-    {
-      sukat_sock_client_t *client = ctx->deleted_head;
-
-      ctx->deleted_head = client->next;
-      free(client);
-    }
-  ctx->deleted_head = ctx->deleted_tail = NULL;
 }
 
 static ret_t read_seqpacket(sukat_sock_t *ctx, sukat_sock_client_t *client)
@@ -1074,7 +1054,7 @@ static ret_t event_handle(sukat_sock_t *ctx, struct epoll_event *event)
           if (event->events & !(EPOLLIN | EPOLLOUT))
             {
               event_non_epollin(ctx, client, event->events);
-              client_close(ctx, client);
+              destro_delete(ctx->destro_ctx, &client->destro_client_ctx);
             }
           else
             {
@@ -1088,7 +1068,8 @@ static ret_t event_handle(sukat_sock_t *ctx, struct epoll_event *event)
                     {
                       if (send_cached(ctx, client) == SUKAT_SEND_ERROR)
                         {
-                          client_close(ctx, client);
+                          destro_delete(ctx->destro_ctx,
+                                        &client->destro_client_ctx);
                         }
                     }
                 }
@@ -1096,9 +1077,13 @@ static ret_t event_handle(sukat_sock_t *ctx, struct epoll_event *event)
                 {
                   ret = event_read(ctx, client);
 
-                  if (ret != ERR_OK || client->destroyed)
+                  if (ret != ERR_OK)
                     {
-                      client_close(ctx, client);
+                      if (!client->destroyed)
+                        {
+                          destro_delete(ctx->destro_ctx,
+                                        &client->destro_client_ctx);
+                        }
                       ret = ERR_BREAK;
                     }
                 }
@@ -1119,6 +1104,7 @@ int sukat_sock_read(sukat_sock_t *ctx, int timeout)
       errno = EINVAL;
       return -1;
     }
+  destro_cb_enter(ctx->destro_ctx);
   do
     {
       ret = ERR_OK;
@@ -1136,30 +1122,21 @@ int sukat_sock_read(sukat_sock_t *ctx, int timeout)
         }
       for (i = 0; i < (size_t)nfds && ret == ERR_OK ; i++)
         {
-          ctx->in_callback = true;
           ret = event_handle(ctx, &new_events[i]);
-          ctx->in_callback = false;
         }
       if (timeout > 0)
         {
           timeout = 0;
         }
-    } while (nfds > 0 && ctx->destroyed != true && ctx->n_connections > 0 &&
-             ret != ERR_FATAL);
+    } while (nfds > 0 && destro_is_deleted(ctx->destro_ctx, NULL) != true &&
+             ctx->n_connections > 0 && ret != ERR_FATAL);
 
 out:
   if (ret == ERR_BREAK)
     {
       ret = ERR_OK;
     }
-  if (ctx->destroyed)
-    {
-      sukat_sock_destroy(ctx);
-    }
-  else
-    {
-      clients_free_deleted(ctx);
-    }
+  destro_cb_exit(ctx->destro_ctx);
   return (int)ret;
 }
 
@@ -1167,6 +1144,8 @@ sukat_sock_t *sukat_sock_create(struct sukat_sock_params *params,
                                 struct sukat_sock_cbs *cbs)
 {
   sukat_sock_t *ctx;
+  struct destro_params dparams = { };
+  struct destro_cbs dcbs = { };
 
   if (!params)
     {
@@ -1225,6 +1204,18 @@ sukat_sock_t *sukat_sock_create(struct sukat_sock_params *params,
     {
       goto fail;
     }
+  dcbs.close = sock_destro_close;
+  if (cbs)
+    {
+      dcbs.log_cb = cbs->log_cb;
+    }
+  dparams.main_ctx = ctx;
+  ctx->destro_ctx = destro_create(&dparams, &dcbs);
+  if (!ctx->destro_ctx)
+    {
+      ERR(ctx, "Failed to create delayed destruction context");
+      goto fail;
+    }
   if (!ctx->is_server)
     {
       if (ctx->connect_in_progress)
@@ -1233,13 +1224,17 @@ sukat_sock_t *sukat_sock_create(struct sukat_sock_params *params,
         }
       else if (socket_connection_oriented(ctx->type))
         {
-          ctx->in_callback = true;
+          bool destroyed_in_between;
+
+          destro_cb_enter(ctx->destro_ctx);
           USE_CB(ctx, conn_cb,
                  ctx->caller_ctx, NULL, &ctx->storage, ctx->slen, false);
-          ctx->in_callback = false;
-          if (ctx->destroyed)
+          destroyed_in_between = destro_is_deleted(ctx->destro_ctx, NULL);
+          destro_cb_exit(ctx->destro_ctx);
+
+          if (destroyed_in_between)
             {
-              goto fail;
+              return NULL;
             }
         }
     }
@@ -1255,33 +1250,15 @@ void sukat_sock_destroy(sukat_sock_t *ctx)
 {
   if (ctx)
     {
-      if (ctx->in_callback)
+      if (ctx->destro_ctx)
         {
-          LOG(ctx, "Delaying destruction");
-          ctx->destroyed = true;
-          return;
+          destro_delete(ctx->destro_ctx, NULL);
         }
-      if (ctx->fd >= 0)
+      else
         {
-          close(ctx->fd);
-          ctx->n_connections--;
+          sock_destro_close(ctx, NULL);
+          free(ctx);
         }
-      if (ctx->master_epoll_fd != -1)
-        {
-          if (event_ctl(ctx->master_epoll_fd, ctx->epoll_fd, ctx, EPOLL_CTL_DEL,
-                        EPOLLIN) != true) {
-              ERR(ctx, "Failed to remove epoll_fd from master fd: %s",
-                  strerror(errno));
-          }
-        }
-      if (ctx->epoll_fd > 0)
-        {
-          close(ctx->epoll_fd);
-        }
-      free_cache(&ctx->read_cache);
-      free_cache(&ctx->write_cache);
-      clients_free_deleted(ctx);
-      free(ctx);
     }
 }
 
@@ -1391,7 +1368,7 @@ void sukat_sock_disconnect(sukat_sock_t *ctx, sukat_sock_client_t *client)
   if (ctx != NULL && client != NULL)
     {
       client->destroyed = true;
-      client_close(ctx, client);
+      destro_delete(ctx->destro_ctx, &client->destro_client_ctx);
     }
 }
 
