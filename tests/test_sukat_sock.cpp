@@ -288,10 +288,34 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_connect)
 {
   sukat_sock_t *ctx, *client_ctx;
   struct sun_test_ctx tctx = { };
-  int err;
+  int err, master_epoll;
+
+  // Test with no params
+  ctx = sukat_sock_create(NULL, &default_cbs);
+  EXPECT_EQ(nullptr, ctx);
+
+  // Test with another epoll.
+  master_epoll = epoll_create1(EPOLL_CLOEXEC);
+  EXPECT_NE(-1, master_epoll);
+
+  // First with a faulty master_epoll.
+  default_params.server = true;
+  default_params.master_epoll_fd_set = true;
+  default_params.master_epoll_fd = -1;
+  ctx = sukat_sock_create(&default_params, &default_cbs);
+  EXPECT_EQ(nullptr, ctx);
+  get_random_socket();
+
+  default_params.master_epoll_fd = master_epoll;
+  ctx = sukat_sock_create(&default_params, &default_cbs);
+  EXPECT_NE(nullptr, ctx);
+  sukat_sock_destroy(ctx);
+  close(master_epoll);
+  default_params.master_epoll_fd_set = false;
+
+  get_random_socket();
 
   default_params.caller_ctx = &tctx;
-  default_params.server = true;
   default_cbs.conn_cb = new_conn_cb;
 
   ctx = sukat_sock_create(&default_params, &default_cbs);

@@ -164,6 +164,20 @@ struct sukat_sock_cbs
 sukat_sock_t *sukat_sock_create(struct sukat_sock_params *params,
                                 struct sukat_sock_cbs *cbs);
 
+/*!
+ * @brief Reads all data in socket context
+ *
+ * On the server side, this will read all available new clients, data from
+ * existing clients and cached write-data to clients from the socket context.
+ * The client side will read all available data from server and send cached
+ * send data if possible
+ *
+ * @param ctx           Socket context.
+ * @param timeout       Timeout in ms, similar to man 2 epoll_wait timeout.
+ *
+ * @return 0            All ok.
+ * @return -1           Fatal error.
+ */
 int sukat_sock_read(sukat_sock_t *ctx, int timeout);
 
 /*!
@@ -219,6 +233,18 @@ enum sukat_sock_send_return
 enum sukat_sock_send_return sukat_send_msg(sukat_sock_t *ctx,
                                            sukat_sock_client_t *client,
                                            uint8_t *msg, size_t msg_len);
+
+/*!
+ * Converts the peer information \p saddr into a human readable format to
+ * \p buf.
+ *
+ * @param saddr         Socket information.
+ * @param sock_len      Length of socket information.
+ *
+ * @return \p buf
+ */
+char *sukat_sock_stringify_peer(struct sockaddr_storage *saddr, size_t sock_len,
+                                char *buf, size_t buf_len);
 
 #endif /* SUKAT_SOCK_H */
 

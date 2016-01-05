@@ -1045,9 +1045,9 @@ static ret_t event_handle(sukat_sock_t *ctx, struct epoll_event *event)
         {
           if (event->events == EPOLLOUT && ctx->write_cache.len > 0)
             {
-              if (send_cached(ctx, NULL) != SUKAT_SEND_OK)
+              if (send_cached(ctx, NULL) == SUKAT_SEND_ERROR)
                 {
-                  return ERR_BREAK;
+                  return ERR_FATAL;
                 }
             }
           else
@@ -1099,8 +1099,6 @@ static ret_t event_handle(sukat_sock_t *ctx, struct epoll_event *event)
   return ret;
 }
 
-/* TODO: Not sure if events can be other than EPOLLIN if the slave
- * fds have other than EPOLLIN */
 int sukat_sock_read(sukat_sock_t *ctx, int timeout)
 {
   int nfds;
@@ -1195,8 +1193,17 @@ sukat_sock_t *sukat_sock_create(struct sukat_sock_params *params,
   }
   if (params->master_epoll_fd_set)
     {
-      if (event_ctl(params->master_epoll_fd, ctx->epoll_fd, ctx,
-                    EPOLL_CTL_ADD, EPOLLIN) != true)
+      struct epoll_event event =
+        {
+          .events = EPOLLIN,
+          .data =
+            {
+              .ptr = ctx
+            }
+        };
+
+      if (epoll_ctl(params->master_epoll_fd, EPOLL_CTL_ADD,
+                    ctx->epoll_fd, &event))
         {
           ERR(ctx, "Failed to add epoll fd %d to master epoll fd %d: %s",
               ctx->epoll_fd, params->master_epoll_fd, strerror(errno));
@@ -1376,6 +1383,48 @@ void sukat_sock_disconnect(sukat_sock_t *ctx, sukat_sock_client_t *client)
       client->destroyed = true;
       client_close(ctx, client);
     }
+}
+
+char *sukat_sock_stringify_peer(struct sockaddr_storage *saddr, size_t sock_len,
+                                char *buf, size_t buf_len)
+{
+  if (buf && buf_len)
+    {
+      if (saddr && sock_len)
+        {
+          union {
+              struct sockaddr_in *sin;
+              struct sockaddr_in6 *sin6;
+          } stypes;
+          char addr_buf[INET6_ADDRSTRLEN];
+          uint16_t port;
+          void *src;
+
+          switch (saddr->ss_family)
+            {
+            case AF_INET:
+            case AF_INET6:
+              stypes.sin = (struct sockaddr_in *)saddr;
+              src = (saddr->ss_family == AF_INET) ?
+                (void *)&stypes.sin->sin_addr : (void *)&stypes.sin6->sin6_addr;
+              port = ntohs((saddr->ss_family == AF_INET) ?
+                           stypes.sin->sin_port : stypes.sin6->sin6_port);
+              snprintf(buf, buf_len, "%s:%hu",
+                       inet_ntop(saddr->ss_family, src, addr_buf,
+                                 sizeof(addr_buf)), port);
+              break;
+            default:
+              snprintf(buf, buf_len, "Family %u", saddr->ss_family);
+              break;
+            }
+        }
+      else
+        {
+          snprintf(buf, buf_len, "Invalid argument");
+        }
+      return buf;
+    }
+  return NULL;
 }
 
 /*! }@ */
