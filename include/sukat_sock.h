@@ -6,10 +6,10 @@
  * @ingroup sukat_api
  * @{
  *
- * sukat API can be used to create socket servers and clients with a small
+ * sukat API can be used to create socket servers and endpoints with a small
  * amount of API calls. Also all the trouble with non-blocking sockets and using
  * of file descriptors is hidden from the caller, which only gets different
- * callbacks informing of new clients, messages, disconnects.
+ * callbacks informing of new endpoints, messages, disconnects.
  *
  * TODO: Add something to examples/
  */
@@ -24,7 +24,7 @@
 #include "sukat_event.h"
 
 typedef struct sukat_sock_ctx sukat_sock_t;
-typedef struct sukat_sock_peer_ctx sukat_sock_peer_t;
+typedef struct sukat_sock_endpoint_ctx sukat_sock_endpoint_t;
 
 /*!
  * Parameters for type AF_INET.
@@ -59,30 +59,34 @@ struct sukat_sock_params_tipc
  */
 struct sukat_sock_params
 {
-  void *caller_ctx; //!< Context passed to callbacks.
-  bool server; //!< If true, act as server.
   int domain; //!< AF_UNIX, AF_UNSPEC(AF_INET or AF_INET6) or AF_TIPC
   int type; //!< SOCK_STREAM, SOCK_DGRAM, SOCK_SEQPACKET or SOCK_RDM.
+  int master_epoll_fd; /*!< If ::master_epoll_fd_set is true, the sukat_sock
+                            API will add its own epoll fd to this master
+                            epoll fd. */
+  bool master_epoll_fd_set; //!< If true, use master_epoll_fd
+
+  /*! Parameters specific to both */
+  void *caller_ctx; //!< Context passed to callbacks.
+
+  /*! Parameters specific to an end-point */
+  size_t listen; //!< If non-zero, use for listen parameter (man 2 listen).
+  bool server; //!< If true, act as server.
   union
     {
       struct sukat_sock_params_inet pinet;
       struct sukat_sock_params_unix punix;
       struct sukat_sock_params_tipc ptipc;
     };
-  int master_epoll_fd; /*!< If ::master_epoll_fd_set is true, the sukat_sock
-                            API will add its own epoll fd to this master
-                            epoll fd. */
-  bool master_epoll_fd_set; //!< If true, use master_epoll_fd
-  size_t listen; //!< If non-zero, use for listen parameter (man 2 listen).
 };
 
 /*!
  * Callback invoked when the server gets a new connection. Also if set by a
- * client, it will be called after succesfully connecting to the server.
- * In the latter case, the client pointer will be null.
+ * added peer connection, it will be called after succesfully connecting to the
+ * server.
  *
  * @param ctx           Caller context.
- * @param client        Client context that can be replied to.
+ * @param endpoint      Endpoint context that can be replied to.
  * @param sockaddr      Data identifying the connected peer.
  * @param sock_len      The length of the identifying information.
  * @param disconnect    True if an already connected connection was
@@ -93,7 +97,8 @@ struct sukat_sock_params
  * @return != NULL      A new context to be given each time callbacks are
  *                      that are related to this connection.
  */
-typedef void *(*sukat_sock_new_conn_cb)(void *ctx, sukat_sock_peer_t *client,
+typedef void *(*sukat_sock_new_conn_cb)(void *ctx,
+                                        sukat_sock_endpoint_t *endpoint,
                                         struct sockaddr_storage *sockaddr,
                                         size_t sock_len, bool disconnect);
 
@@ -118,12 +123,12 @@ typedef int (*sukat_sock_msg_len_cb)(void *ctx, uint8_t *buf, size_t buf_len);
  * Callback invoked each time a full message is received.
  *
  * @param ctx           Caller context.
- * @param client        Client context. If the msg_cb is invoked on the client,
+ * @param endpoint        Client context. If the msg_cb is invoked on the endpoint,
  *                      this will be NULL.
  * @param buf           Buffer containing message.
  * @param buf_len       Length of message.
  */
-typedef void (*sukat_sock_msg_cb)(void *ctx, sukat_sock_peer_t *client,
+typedef void (*sukat_sock_msg_cb)(void *ctx, sukat_sock_endpoint_t *endpoint,
                                   uint8_t *buf, size_t buf_len);
 
 /*!
@@ -136,7 +141,7 @@ typedef void (*sukat_sock_msg_cb)(void *ctx, sukat_sock_peer_t *client,
  * @param id    id for which connection failed. -1 for main ctx failure.
  * @param errval error number describing problem
  */
-typedef void (*sukat_sock_error_cb)(void *ctx, sukat_sock_peer_t *peer,
+typedef void (*sukat_sock_error_cb)(void *ctx, sukat_sock_endpoint_t *endpoint,
                                     int errval);
 
 /*!
@@ -166,11 +171,26 @@ sukat_sock_t *sukat_sock_create(struct sukat_sock_params *params,
                                 struct sukat_sock_cbs *cbs);
 
 /*!
+ * @brief Adds an end-point to the sock context.
+ *
+ * @param ctx           Context created with ::sukat_sock_create
+ * @param params        Parameters for end-point.
+ *
+ * @return != NULL      Success. Use this to communicate with end-point. If
+ *                      this was a client connection, it is only valid after
+ *                      its been succesfully connected (conn_cb called if
+ *                      defined).
+ * @return NULL         Failure
+ */
+sukat_sock_endpoint_t *sukat_sock_endpoint_add(sukat_sock_t *ctx,
+                                               struct sukat_sock_params *params);
+
+/*!
  * @brief Reads all data in socket context
  *
- * On the server side, this will read all available new clients, data from
- * existing clients and cached write-data to clients from the socket context.
- * The client side will read all available data from server and send cached
+ * On the server side, this will read all available new endpoints, data from
+ * existing endpoints and cached write-data to endpoints from the socket context.
+ * The endpoint side will read all available data from server and send cached
  * send data if possible
  *
  * @param ctx           Socket context.
@@ -199,14 +219,14 @@ int sukat_sock_get_epoll_fd(sukat_sock_t *ctx);
 void sukat_sock_destroy(sukat_sock_t *ctx);
 
 /*!
- * @brief Disconnects the client.
+ * @brief Disconnects the endpoint.
  *
  * \ref sukat_sock_new_conn_cb will not be called with disconnect == true.
  *
  * @param ctx           Main context.
- * @param client        Client to disconnect.
+ * @param endpoint        Client to disconnect.
  */
-void sukat_sock_disconnect(sukat_sock_t *ctx, sukat_sock_peer_t *client);
+void sukat_sock_disconnect(sukat_sock_t *ctx, sukat_sock_endpoint_t *endpoint);
 
 /*!
  * Different possible return values for sukat API send calls.
@@ -220,19 +240,19 @@ enum sukat_sock_send_return
 };
 
 /*!
- * Sends a message. In case the sukat context is a server, a client is
+ * Sends a message. In case the sukat context is a server, a endpoint is
  * identified by \p id. Otherwise \p id is ignored and the message is sent to
  * the server.
  *
  * @param ctx           Sukat API context.
- * @param id            If non-null, the client to send message to.
+ * @param id            If non-null, the endpoint to send message to.
  * @param msg           Message to send.
  * @param msg_len       Length of message.
  *
  * @return ::sukat_sock_send_return
  */
 enum sukat_sock_send_return sukat_send_msg(sukat_sock_t *ctx,
-                                           sukat_sock_peer_t *client,
+                                           sukat_sock_endpoint_t *endpoint,
                                            uint8_t *msg, size_t msg_len);
 
 /*!
@@ -250,12 +270,12 @@ char *sukat_sock_stringify_peer(struct sockaddr_storage *saddr, size_t sock_len,
 /*!
  * Returns the port in host byte order from a AF_INET or AF_INET6 socket.
  *
- * @param ctx   Socket context.
+ * @param endpoint      endpoint to query
  *
  * @return > 0  Port.
  * @return 0    Wrong domain.
  */
-uint16_t sukat_sock_get_port(sukat_sock_t *ctx);
+uint16_t sukat_sock_get_port(sukat_sock_endpoint_t *endpoint);
 
 #endif /* SUKAT_SOCK_H */
 

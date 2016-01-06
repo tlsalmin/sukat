@@ -69,6 +69,7 @@ void *open_cb(void *ctx, sukat_bgp_client_t *client, uint8_t version,
   return NULL;
 }
 
+#if 0
 TEST_F(sukat_bgp_test, sukat_bgp_test_init)
 {
   sukat_bgp_t *server, *client;
@@ -97,7 +98,7 @@ TEST_F(sukat_bgp_test, sukat_bgp_test_init)
   default_params.my_as = client_as;
   default_params.bgp_id = client_bgp;
 
-  port = sukat_sock_get_port(server->sock_ctx);
+  port = sukat_sock_get_port(server->sock_ctx, NULL);
   EXPECT_LT(0, port);
   snprintf(portbuf, sizeof(portbuf), "%hu", port);
   default_params.port = portbuf;
@@ -134,3 +135,4 @@ TEST_F(sukat_bgp_test, sukat_bgp_test_init)
   sukat_bgp_destroy(client);
   sukat_bgp_destroy(server);
 }
+#endif

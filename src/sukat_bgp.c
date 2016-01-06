@@ -35,7 +35,7 @@ struct sukat_bgp_ctx_t
 struct sukat_bgp_client_ctx
 {
   destro_client_t destro_client_ctx;
-  sukat_sock_peer_t *sock_peer;
+  sukat_sock_endpoint_t *sock_peer;
   struct {
       uint8_t opened:1; //!< True if we have received a BGP_MSG_OPEN.
       uint8_t unused:7;
@@ -142,7 +142,7 @@ static bool msg_is_sane(uint8_t *buf, size_t buf_len)
   return false;
 }
 
-static void bgp_msg_cb(void *ctx, sukat_sock_peer_t *client, uint8_t *buf,
+static void bgp_msg_cb(void *ctx, sukat_sock_endpoint_t *client, uint8_t *buf,
                        size_t buf_len)
 {
   struct bgp_msg *msg = (struct bgp_msg *)buf;
@@ -238,7 +238,7 @@ static bool msg_send_open(sukat_bgp_t *ctx, sukat_bgp_client_t *client)
   return false;
 }
 
-static void *bgp_conn_cb(void *caller_ctx, sukat_sock_peer_t *sock_peer,
+static void *bgp_conn_cb(void *caller_ctx, sukat_sock_endpoint_t *sock_peer,
                          struct sockaddr_storage *sockaddr, size_t sock_len,
                          bool disconnect)
 {
