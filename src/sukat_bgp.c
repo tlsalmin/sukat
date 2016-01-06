@@ -35,7 +35,7 @@ struct sukat_bgp_ctx_t
 struct sukat_bgp_client_ctx
 {
   destro_client_t destro_client_ctx;
-  sukat_sock_client_t *sock_client;
+  sukat_sock_peer_t *sock_peer;
   struct {
       uint8_t opened:1; //!< True if we have received a BGP_MSG_OPEN.
       uint8_t unused:7;
@@ -142,7 +142,7 @@ static bool msg_is_sane(uint8_t *buf, size_t buf_len)
   return false;
 }
 
-static void bgp_msg_cb(void *ctx, sukat_sock_client_t *client, uint8_t *buf,
+static void bgp_msg_cb(void *ctx, sukat_sock_peer_t *client, uint8_t *buf,
                        size_t buf_len)
 {
   struct bgp_msg *msg = (struct bgp_msg *)buf;
@@ -227,7 +227,7 @@ static bool msg_send_open(sukat_bgp_t *ctx, sukat_bgp_client_t *client)
   // Add optional parameters here when added.
   msg->msg.open.opt_param_len = 0;
 
-  if (sukat_send_msg(ctx->sock_ctx, (client) ? client->sock_client : NULL,
+  if (sukat_send_msg(ctx->sock_ctx, (client) ? client->sock_peer : NULL,
                      buf, msg_len) == SUKAT_SEND_OK)
     {
       LOG(ctx, "Sent open message to %s.", (client) ? "client" : "server");
@@ -238,7 +238,7 @@ static bool msg_send_open(sukat_bgp_t *ctx, sukat_bgp_client_t *client)
   return false;
 }
 
-static void *bgp_conn_cb(void *caller_ctx, sukat_sock_client_t *sock_client,
+static void *bgp_conn_cb(void *caller_ctx, sukat_sock_peer_t *sock_peer,
                          struct sockaddr_storage *sockaddr, size_t sock_len,
                          bool disconnect)
 {
@@ -249,17 +249,17 @@ static void *bgp_conn_cb(void *caller_ctx, sukat_sock_client_t *sock_client,
       sukat_bgp_client_t *client;
 
       LOG(ctx, "New BGP %s from %s",
-          (sock_client) ? "client" : "server connection",
+          (sock_peer) ? "client" : "server connection",
           sukat_sock_stringify_peer(sockaddr, sock_len, peer_buf,
                                     sizeof(peer_buf)));
 
-      if (sock_client)
+      if (sock_peer)
         {
           client = (sukat_bgp_client_t *)calloc(1, sizeof(*client));
           if (client)
             {
               client->main_ctx = ctx;
-              client->sock_client = sock_client;
+              client->sock_peer = sock_peer;
               if (msg_send_open(ctx, client) == true)
                 {
                   DBG(ctx, "Sent open to new client");
@@ -271,7 +271,7 @@ static void *bgp_conn_cb(void *caller_ctx, sukat_sock_client_t *sock_client,
             {
               ERR(ctx, "Out of memory for new BGP peer");
             }
-          sukat_sock_disconnect(ctx->sock_ctx, sock_client);
+          sukat_sock_disconnect(ctx->sock_ctx, sock_peer);
         }
       else
         {
@@ -308,7 +308,7 @@ void bgp_destro_close(void *main_ctx, void *client_ctx)
     {
       sukat_bgp_client_t *client = (sukat_bgp_client_t *)client_ctx;
 
-      sukat_sock_disconnect(ctx->sock_ctx, client->sock_client);
+      sukat_sock_disconnect(ctx->sock_ctx, client->sock_peer);
     }
   else
     {

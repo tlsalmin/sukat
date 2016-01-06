@@ -41,38 +41,9 @@ struct rw_cache
   size_t len; //!< How much is read or how much is left to send.
 };
 
-struct sukat_sock_client_ctx
+struct fd_info
 {
-  destro_client_t destro_client_ctx;
-  int fd; //!< Accepted fd.
-  void *client_caller_ctx; //!< Specific context if set. Otherwise NULL.
-  struct {
-      uint8_t destroyed:1; //!< If true, destroy on first chance.
-      uint8_t epollout:1; //!< If true, we're also waiting for epollout.
-      uint8_t closed:1; //!< True if client already closed
-      uint8_t unused:5;
-  };
-  sukat_sock_t *main_ctx; //!< Backwards pointer to sukat_sock_t.
-  struct rw_cache read_cache;
-  struct rw_cache write_cache;
-  sukat_sock_client_t *next; //!< Next pointer if in deleted list.
-};
-
-struct sukat_sock_ctx
-{
-  struct sukat_sock_cbs cbs;
-  int fd; //!< Main fd for accept to server or connected fd for client.
-  void *caller_ctx; //!< If true, dont delete immediately.
-  int epoll_fd;
-  struct {
-      uint8_t connect_in_progress:1; //! If set, a connect returned EINPROCESS
-      uint8_t is_server:1; //!< True for server operation.
-      uint8_t epollout:1; //!< If true, we're also waiting for epollout.
-  };
-  size_t n_connections;
-  int master_epoll_fd;
-  int domain;
-  int type;
+  int fd; //!< Main fd for accept/read for server.
   union
     {
       struct sockaddr_storage storage;
@@ -83,10 +54,45 @@ struct sukat_sock_ctx
       struct sockaddr saddr;
     };
   socklen_t slen;
+};
+
+struct sukat_sock_peer_ctx
+{
+  destro_client_t destro_client_ctx;
+  void *peer_caller_ctx; //!< Specific context if set. Otherwise NULL.
   struct {
-      struct rw_cache read_cache;
-      struct rw_cache write_cache;
+      uint8_t destroyed:1; //!< If true, destroy on first chance.
+      uint8_t epollout:1; //!< If true, we're also waiting for epollout.
+      uint8_t closed:1; //!< True if peer already closed
+      uint8_t connect_in_progress:1;
+      uint8_t unused:4;
   };
+  struct fd_info info;
+  sukat_sock_t *main_ctx; //!< Backwards pointer to sukat_sock_t.
+  struct rw_cache read_cache;
+  struct rw_cache write_cache;
+};
+
+struct sukat_sock_ctx
+{
+  struct sukat_sock_cbs cbs;
+  void *caller_ctx; //!< If true, dont delete immediately.
+  int epoll_fd;
+  struct {
+      uint8_t is_server:1; /*!< True for server operation. Means that the main
+                                fd is a valid fd which is used for accept/read.
+                                */
+      uint8_t unused:7;
+  };
+  size_t n_connections;
+  int master_epoll_fd;
+  int domain;
+  int type;
+  union
+    {
+      struct fd_info info; //!< For a server.
+      sukat_sock_peer_t *peer; //!< For a client connection.
+    };
   destro_t *destro_ctx;
 };
 
@@ -130,24 +136,16 @@ static bool socket_connection_oriented(int type)
     }                                                                         \
   while (0)
 
-static char *socket_log(sukat_sock_t *ctx, struct sukat_sock_params *params,
-                        char *buf, size_t buf_len)
+static char *socket_log_params(sukat_sock_t *ctx,
+                               struct sukat_sock_params *params,
+                               char *buf, size_t buf_len)
 {
+
   size_t n_used = 0;
-  int domain = (params) ? params->domain : ctx->domain;
-  bool is_abstract = (params) ? params->punix.is_abstract :
-    (ctx->sun.sun_path[0] == '\0');
-  uint32_t port_type = (params) ? params->ptipc.port_type :
-    ctx->stipc.addr.nameseq.type;
-  uint32_t port_instance = (params) ? params->ptipc.port_instance :
-    ctx->stipc.addr.nameseq.lower;
-  const char *unix_path = (params) ? params->punix.name : (is_abstract) ?
-    ctx->sun.sun_path + 1 : ctx->sun.sun_path;
-  int type = (params) ? params->type : ctx->type;
 
-  assert(ctx != NULL && buf != NULL && buf_len > 0);
+  assert(ctx != NULL && buf != NULL && buf_len > 0 && params != NULL);
 
-  switch(type)
+  switch(params->type)
     {
     case SOCK_STREAM:
       SAFEPUT("Stream ");
@@ -159,39 +157,41 @@ static char *socket_log(sukat_sock_t *ctx, struct sukat_sock_params *params,
       SAFEPUT("Seqpacket ");
       break;
     default:
-      SAFEPUT("Unknown type %d", type);
+      SAFEPUT("Unknown type %d", params->type);
       break;
     }
 
   SAFEPUT((ctx->is_server) ? "server ": "client ");
-  switch (domain)
+  switch (params->domain)
     {
     case AF_UNIX:
-      SAFEPUT("UNIX %s%s", (is_abstract) ? "abstract " : "", unix_path);
+      SAFEPUT("UNIX %s%s", (params->punix.is_abstract) ? "abstract " :
+              "", params->punix.name);
       break;
     case AF_TIPC:
-      SAFEPUT("TIPC type %d service %d", port_type, port_instance);
+      SAFEPUT("TIPC type %d service %d", params->ptipc.port_type,
+              params->ptipc.port_instance);
       break;
     case AF_INET:
     case AF_INET6:
     case AF_UNSPEC:
-      SAFEPUT("INET %s:%s", (params) ? params->pinet.ip : "TODO", 
-              (params) ? params->pinet.port : "TODO");
+      SAFEPUT("INET %s:%s", params->pinet.ip, params->pinet.port);
       break;
     default:
-      SAFEPUT("Unknown %d", domain);
+      SAFEPUT("Unknown %d", params->domain);
       break;
     }
 
   return buf;
 }
 
-static char *socket_log_saddr(sukat_sock_t *ctx, char *buf, size_t buf_len)
+static char *socket_log_fd_info(sukat_sock_t *ctx, struct fd_info *info,
+                                char *buf, size_t buf_len)
 {
   size_t n_used = 0;
   char inet_buf[INET6_ADDRSTRLEN];
 
-  assert(ctx != NULL && buf != NULL && buf_len > 0);
+  assert(ctx != NULL && info != NULL && buf != NULL && buf_len > 0);
   switch(ctx->type)
     {
     case SOCK_STREAM:
@@ -211,20 +211,21 @@ static char *socket_log_saddr(sukat_sock_t *ctx, char *buf, size_t buf_len)
   switch(ctx->domain)
     {
     case AF_UNIX:
-      SAFEPUT("UNIX %s", ctx->sun.sun_path);
+      SAFEPUT("UNIX %s", info->sun.sun_path);
       break;
     case AF_TIPC:
-      SAFEPUT("TIPC port_type %u instance %u", ctx->stipc.addr.nameseq.type,
-              ctx->stipc.addr.nameseq.lower);
+      SAFEPUT("TIPC port_type %u instance %u",
+              ntohl(info->stipc.addr.nameseq.type),
+              ntohl(info->stipc.addr.nameseq.lower));
       break;
     case AF_INET:
     case AF_INET6:
       SAFEPUT("IPv%d IP %s port %hu", (ctx->domain == AF_INET) ? 4 : 6,
               inet_ntop(ctx->domain, (ctx->domain == AF_INET) ?
-                        (void *)&ctx->sin.sin_addr :
-                        (void *)&ctx->sin6.sin6_addr,
+                        (void *)&info->sin.sin_addr :
+                        (void *)&info->sin6.sin6_addr,
                         inet_buf, sizeof(inet_buf)),
-              ntohs(ctx->sin.sin_port));
+              ntohs(info->sin.sin_port));
       // I don't think AF_UNSPEC should be here anymore
        break;
     default:
@@ -259,26 +260,19 @@ static bool cache_to(struct rw_cache *cache, uint8_t *buf, size_t buf_amount)
 #define RW_CACHE(_ptr, _write)                                                \
   ((write) ? &_ptr->write_cache : &_ptr->read_cache)
 
-static bool cache(sukat_sock_t *ctx, sukat_sock_client_t *client,
+static bool cache(sukat_sock_t *ctx, sukat_sock_peer_t *peer,
                   uint8_t *buf, size_t buf_amount, bool write)
 {
   bool ret;
 
-  assert(ctx != NULL && buf != NULL);
+  assert(ctx != NULL && buf != NULL && peer != NULL);
   if(!buf_amount)
     {
       return true;
     }
-  DBG(ctx, "Caching %zu bytes from %s to %s", buf_amount,
-      (write) ? "writing" : "reading", (client) ? "client" : "main");
-  if (client)
-    {
-      ret = cache_to(RW_CACHE(client, write), buf, buf_amount);
-    }
-  else
-    {
-      ret = cache_to(RW_CACHE(ctx, write), buf, buf_amount);
-    }
+  DBG(ctx, "Caching %zu bytes from %s", buf_amount,
+      (write) ? "writing" : "reading");
+  ret = cache_to(RW_CACHE(peer, write), buf, buf_amount);
   if (ret == false)
     {
       ERR(ctx, "Cannot cache %zu bytes for %s data: %s", buf_amount,
@@ -299,18 +293,12 @@ static void uncache_from(struct rw_cache *cache, uint8_t *buf, size_t *uncached)
   free_cache(cache);
 }
 
-static void uncache(sukat_sock_t *ctx, sukat_sock_client_t *client,
+static void uncache(__attribute__((unused)) sukat_sock_t *ctx,
+                    sukat_sock_peer_t *peer,
                     uint8_t *buf, size_t *uncached, bool write)
 {
-  assert(ctx != NULL && buf != NULL && uncached != NULL);
-  if (client)
-    {
-      uncache_from(RW_CACHE(client, write), buf, uncached);
-    }
-  else
-    {
-      uncache_from(RW_CACHE(ctx, write), buf, uncached);
-    }
+  assert(ctx != NULL && buf != NULL && uncached != NULL && peer != NULL);
+  uncache_from(RW_CACHE(peer, write), buf, uncached);
 }
 
 /*!
@@ -388,7 +376,7 @@ static bool socket_fill_unix(sukat_sock_t *ctx,
 }
 
 static int socket_create_hinted(sukat_sock_t *ctx, struct addrinfo *p,
-                                bool server, int backlog)
+                                sukat_sock_peer_t *peer, int backlog)
 {
   int fd = socket(p->ai_family, p->ai_socktype |
                   SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
@@ -397,7 +385,7 @@ static int socket_create_hinted(sukat_sock_t *ctx, struct addrinfo *p,
       ERR(ctx, "Failed to create socket: %s", strerror(errno));
       return -1;
     }
-  if (server)
+  if (!peer)
     {
       int enable = 1;
 
@@ -435,7 +423,7 @@ static int socket_create_hinted(sukat_sock_t *ctx, struct addrinfo *p,
           if (errno == EINPROGRESS)
             {
               DBG(ctx, "Connect not completed with a single call");
-              ctx->connect_in_progress = true;
+              peer->connect_in_progress = true;
             }
           else
             {
@@ -445,12 +433,7 @@ static int socket_create_hinted(sukat_sock_t *ctx, struct addrinfo *p,
         }
       else
         {
-          if (ctx->cbs.conn_cb)
-            {
-              USE_CB(ctx, conn_cb,ctx->caller_ctx, NULL,
-                     (struct sockaddr_storage *)p->ai_addr,
-                     p->ai_addrlen, false);
-            }
+          // Don't conn_cb just yet.
         }
     }
   return fd;
@@ -478,7 +461,8 @@ static bool is_inet(int domain)
  * @return >= 0         Valid fd.
  * @return < 0          Failure.
  * */
-static int socket_create(sukat_sock_t *ctx, struct sukat_sock_params *params)
+static int socket_create(sukat_sock_t *ctx, struct sukat_sock_params *params,
+                         sukat_sock_peer_t *peer)
 {
   int main_fd = -1;
   char socket_buf[128];
@@ -489,8 +473,8 @@ static int socket_create(sukat_sock_t *ctx, struct sukat_sock_params *params)
   struct addrinfo hints = { }, *servinfo = NULL, *p;
 
   memset(&socks, 0, sizeof(socks));
-  LOG(ctx, "%s: Creating", socket_log(ctx, params, socket_buf,
-                                      sizeof(socket_buf)));
+  LOG(ctx, "%s: Creating",
+      socket_log_params(ctx, params, socket_buf, sizeof(socket_buf)));
   p = &hints;
   hints.ai_family = params->domain;
   hints.ai_socktype = params->type;
@@ -528,17 +512,19 @@ static int socket_create(sukat_sock_t *ctx, struct sukat_sock_params *params)
 
   for (;p && main_fd == -1 ; p = p->ai_next)
     {
-      main_fd = socket_create_hinted(ctx, p, params->server, params->listen);
+      main_fd = socket_create_hinted(ctx, p, peer, params->listen);
       if (main_fd >= 0)
         {
-          ctx->slen = p->ai_addrlen;
+          struct fd_info *info = (peer) ? &peer->info : &ctx->info;
+
+          info->slen = p->ai_addrlen;
 
           /* In the server case we might use port so add extra querying for
              these scenarios */
           if (ctx->is_server && is_inet(params->domain))
             {
-              ctx->slen = sizeof(ctx->storage);
-              if (getsockname(main_fd, &ctx->saddr, &ctx->slen) != 0)
+              info->slen = sizeof(info->storage);
+              if (getsockname(main_fd, &info->saddr, &info->slen) != 0)
                 {
                   ERR(ctx, "Failed to query address server is bound to :%s",
                       strerror(errno));
@@ -548,14 +534,14 @@ static int socket_create(sukat_sock_t *ctx, struct sukat_sock_params *params)
             }
           else
             {
-              memcpy(&ctx->sin, p->ai_addr, p->ai_addrlen);
+              memcpy(&info->sin, p->ai_addr, p->ai_addrlen);
             }
           ctx->n_connections++;
           ctx->domain = p->ai_family;
           ctx->type = p->ai_socktype;
 
-          LOG(ctx, "%s created", socket_log_saddr(ctx, socket_buf,
-                                                  sizeof(socket_buf)));
+          LOG(ctx, "%s created", socket_log_fd_info(ctx, info, socket_buf,
+                                                    sizeof(socket_buf)));
           break;
         }
     }
@@ -598,11 +584,11 @@ static bool event_add_to_ctx(sukat_sock_t *ctx, int fd, void *data, int op,
 }
 
 static bool event_epollout(sukat_sock_t *ctx,
-                           sukat_sock_client_t *client, bool end)
+                           sukat_sock_peer_t *peer, bool end)
 {
-  void *data = (client) ? (void *)client : (void *)ctx;
-  int fd = (client) ? client->fd : ctx->fd;
-  bool epollout_flag = (client) ? client->epollout : ctx->epollout;
+  void *data = (peer) ? (void *)peer : (void *)ctx;
+  int fd = (peer) ? peer->info.fd : ctx->info.fd;
+  bool epollout_flag = (peer) ? peer->epollout : false;
   uint32_t events = EPOLLIN;
 
   if (!end)
@@ -616,23 +602,19 @@ static bool event_epollout(sukat_sock_t *ctx,
         {
           return false;
         }
-      if (client)
+      if (peer)
         {
-          client->epollout = (end) ? 0 : 1;
-        }
-      else
-        {
-          ctx->epollout = (end) ? 0 : 1;
+          peer->epollout = (end) ? 0 : 1;
         }
     }
   return true;
 }
 
-static void *get_caller_ctx(sukat_sock_t *ctx, sukat_sock_client_t *client)
+static void *get_caller_ctx(sukat_sock_t *ctx, sukat_sock_peer_t *peer)
 {
-  if (client && client->client_caller_ctx)
+  if (peer && peer->peer_caller_ctx)
     {
-      return client->client_caller_ctx;
+      return peer->peer_caller_ctx;
     }
   return ctx->caller_ctx;
 }
@@ -640,38 +622,42 @@ static void *get_caller_ctx(sukat_sock_t *ctx, sukat_sock_client_t *client)
 static void sock_destro_close(void *main_ctx, void *client_ctx)
 {
   sukat_sock_t *ctx = (sukat_sock_t *)main_ctx;
-  sukat_sock_client_t *client = (sukat_sock_client_t *)client_ctx;
+  sukat_sock_peer_t *peer = (sukat_sock_peer_t *)client_ctx;
 
-  if (client)
+  if (peer)
     {
       uint32_t events = EPOLLIN;
-      void *caller_ctx = get_caller_ctx(ctx, client);
+      void *caller_ctx = get_caller_ctx(ctx, peer);
 
-      if (client->closed)
+      if (peer->closed)
         {
           return;
         }
-      LOG(ctx, "Removing client %d", client->fd);
-      if (client->epollout)
+      LOG(ctx, "Removing peer %d", peer->info.fd);
+      if (peer->epollout)
         {
           events |= EPOLLOUT;
         }
-      event_ctl(ctx->epoll_fd, client->fd, NULL, EPOLL_CTL_DEL, events);
-      free_cache(&client->read_cache);
-      free_cache(&client->write_cache);
-      close(client->fd);
-      if (!client->destroyed)
+      event_ctl(ctx->epoll_fd, peer->info.fd, NULL, EPOLL_CTL_DEL, events);
+      free_cache(&peer->read_cache);
+      free_cache(&peer->write_cache);
+      close(peer->info.fd);
+      if (!peer->destroyed)
         {
-          USE_CB(ctx, conn_cb, caller_ctx, client, NULL, 0, true);
+          USE_CB(ctx, conn_cb, caller_ctx, peer, NULL, 0, true);
         }
       ctx->n_connections--;
+      if (peer == ctx->peer)
+        {
+          ctx->peer = NULL;
+        }
     }
   else
     {
       LOG(ctx, "Removing main sock context");
-      if (ctx->fd >= 0)
+      if (ctx->is_server && ctx->info.fd >= 0)
         {
-          close(ctx->fd);
+          close(ctx->info.fd);
           ctx->n_connections--;
         }
       if (ctx->master_epoll_fd != -1)
@@ -686,8 +672,6 @@ static void sock_destro_close(void *main_ctx, void *client_ctx)
         {
           close(ctx->epoll_fd);
         }
-      free_cache(&ctx->read_cache);
-      free_cache(&ctx->write_cache);
     }
 }
 
@@ -698,19 +682,18 @@ typedef enum event_handling_ret
   ERR_BREAK = 1,
 } ret_t;
 
-static bool ret_was_ok(sukat_sock_t *ctx, sukat_sock_client_t *client,
+static bool ret_was_ok(sukat_sock_t *ctx, sukat_sock_peer_t *peer,
                        ssize_t ret)
 {
   if (ret <= 0)
     {
       if (!(ret == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)))
         {
-          int client_id = (client) ? client->fd : 0;
-          void *caller_ctx = get_caller_ctx(ctx, client);
+          void *caller_ctx = get_caller_ctx(ctx, peer);
 
           ERR(ctx, "Connection %s%s", (ret == 0) ? "closed" :
               "severed: ", (ret == -1) ? strerror(errno) : "");
-          USE_CB(ctx, error_cb, caller_ctx, client_id, errno);
+          USE_CB(ctx, error_cb, caller_ctx, peer, errno);
           return false;
         }
     }
@@ -732,24 +715,25 @@ static ret_t server_accept_cb(sukat_sock_t *ctx)
   int fd;
 
   while (destro_is_deleted(ctx->destro_ctx, NULL) != true &&
-         (fd = accept(ctx->fd, (struct sockaddr *)&saddr, &slen)) >= 0)
+         (fd = accept(ctx->info.fd, (struct sockaddr *)&saddr, &slen)) >= 0)
     {
       if (set_flags(ctx, fd) == true)
         {
-          sukat_sock_client_t *client =
-            (sukat_sock_client_t *)calloc(1, sizeof(*client));
+          sukat_sock_peer_t *client =
+            (sukat_sock_peer_t *)calloc(1, sizeof(*client));
 
           if (client)
             {
-              client->fd = fd;
+              client->info.fd = fd;
               client->main_ctx = ctx;
+              memcpy(&client->info.storage, &saddr, slen);
 
               if (event_add_to_ctx(ctx, fd, client, EPOLL_CTL_ADD,
                                    EPOLLIN) == true)
                 {
                   LOG(ctx, "New client with fd %d", fd);
                   ctx->n_connections++;
-                  USE_CB_WRET(ctx, client->client_caller_ctx, conn_cb,
+                  USE_CB_WRET(ctx, client->peer_caller_ctx, conn_cb,
                               ctx->caller_ctx, client, &saddr, slen, false);
                   continue;
                 }
@@ -766,20 +750,32 @@ static ret_t server_accept_cb(sukat_sock_t *ctx)
   return ERR_BREAK;
 }
 
-static ret_t client_continue_connect(sukat_sock_t *ctx)
+static ret_t client_continue_connect(sukat_sock_t *ctx, sukat_sock_peer_t *peer)
 {
   int opt;
   socklen_t len = sizeof(opt);
+  void *caller_ctx = get_caller_ctx(ctx, peer);
 
-  if (getsockopt(ctx->fd, SOL_SOCKET, SO_ERROR, &opt, &len) == 0)
+  assert(ctx != NULL && peer != NULL);
+
+  if (getsockopt(peer->info.fd, SOL_SOCKET, SO_ERROR, &opt, &len) == 0)
     {
       if (!opt)
         {
-          LOG(ctx, "Connected!");
-          ctx->connect_in_progress = false;
-          event_epollout(ctx, NULL, true);
-          USE_CB(ctx, conn_cb, ctx->caller_ctx, NULL, &(ctx->storage),
-                 ctx->slen, false);
+          void *new_caller_ctx = NULL;
+          char peer_data[128];
+
+          LOG(ctx, "Connect completed to %s",
+              socket_log_fd_info(ctx, &peer->info, peer_data,
+                                 sizeof(peer_data)));
+          peer->connect_in_progress = false;
+          event_epollout(ctx, peer, true);
+          USE_CB_WRET(ctx, new_caller_ctx, conn_cb, caller_ctx, peer,
+                      &(peer->info.storage), peer->info.slen, false);
+          if (new_caller_ctx)
+            {
+              peer->peer_caller_ctx = new_caller_ctx;
+            }
           return ERR_OK;
         }
       else
@@ -790,12 +786,14 @@ static ret_t client_continue_connect(sukat_sock_t *ctx)
   else
     {
       ERR(ctx, "Failed to query connection state: %s", strerror(errno));
+      opt = errno;
     }
+  USE_CB(ctx, error_cb, caller_ctx, peer, opt);
   return ERR_FATAL;
 }
 
 static bool keep_going(sukat_sock_t *ctx,
-                       sukat_sock_client_t *client)
+                       sukat_sock_peer_t *client)
 {
   return !destro_is_deleted(ctx->destro_ctx,
                             (client) ? &client->destro_client_ctx : NULL);
@@ -806,29 +804,29 @@ static bool keep_going(sukat_sock_t *ctx,
 #define ITBLOCKS(_retval)                                                     \
   (_retval == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
 
-static ret_t read_stream(sukat_sock_t *ctx, sukat_sock_client_t *client)
+static ret_t read_stream(sukat_sock_t *ctx, sukat_sock_peer_t *peer)
 {
   uint8_t buf[BUFSIZ];
   ssize_t read_now;
   bool blocked = false;
   size_t n_read = 0;
 
-  DBG(ctx, "Reading from %s", (client) ? "client" : "server");
+  assert(ctx != NULL && peer != NULL);
+  DBG(ctx, "Reading stream fd %d", peer->info.fd);
 
-  uncache(ctx, client, buf, &n_read, false);
+  uncache(ctx, peer, buf, &n_read, false);
 
   while (blocked == false)
     {
-      int fd = (client) ? client->fd : ctx->fd;
+      int fd = peer->info.fd;
       size_t processed;
-      void *caller_ctx = get_caller_ctx(ctx, client);
-      int client_id = (client) ? client->fd : 0;
+      void *caller_ctx = get_caller_ctx(ctx, peer);
 
       do
         {
           read_now = read(fd, buf + n_read, BUF_LEFT);
         } while (read_now > 0 && (n_read += read_now) < sizeof(buf));
-      if (ret_was_ok(ctx, client, read_now) != true)
+      if (ret_was_ok(ctx, peer, read_now) != true)
         {
           return ERR_FATAL;
         }
@@ -837,11 +835,10 @@ static ret_t read_stream(sukat_sock_t *ctx, sukat_sock_client_t *client)
           blocked = true;
         }
 
-      DBG(ctx, "Read %zu bytes from %s", n_read, (client) ? "client" :
-          "server");
+      DBG(ctx, "Read %zu bytes from %d", n_read, peer->info.fd);
 
       processed = 0;
-      while (UNPROCESSED && keep_going(ctx, client))
+      while (UNPROCESSED && keep_going(ctx, peer))
         {
           size_t msg_len = 0;
 
@@ -851,7 +848,7 @@ static ret_t read_stream(sukat_sock_t *ctx, sukat_sock_client_t *client)
 
               USE_CB_WRET(ctx, msg_len_query, msg_len_cb, caller_ctx,
                           buf + processed, UNPROCESSED);
-              if (!keep_going(ctx, client))
+              if (!keep_going(ctx, peer))
                 {
                   return ERR_OK;
                 }
@@ -870,11 +867,11 @@ static ret_t read_stream(sukat_sock_t *ctx, sukat_sock_client_t *client)
                     }
                   else
                     {
-                      if (cache(ctx, client, buf + processed,
+                      if (cache(ctx, peer, buf + processed,
                                 UNPROCESSED, false) != true)
                         {
                           USE_CB(ctx, error_cb,
-                                 caller_ctx, client_id, ENOMEM);
+                                 caller_ctx, peer, ENOMEM);
                           return ERR_FATAL;
                         }
                       return ERR_OK;
@@ -886,8 +883,7 @@ static ret_t read_stream(sukat_sock_t *ctx, sukat_sock_client_t *client)
               ERR(ctx, "Stream oriented without a msg_len_cb not implemented");
               return ERR_FATAL;
             }
-          USE_CB(ctx, msg_cb,
-                 caller_ctx, client, buf + processed, msg_len);
+          USE_CB(ctx, msg_cb, caller_ctx, peer, buf + processed, msg_len);
           processed += msg_len;
         }
       if (processed == n_read)
@@ -903,7 +899,7 @@ static ret_t read_stream(sukat_sock_t *ctx, sukat_sock_client_t *client)
   return ERR_OK;
 }
 
-static ret_t read_seqpacket(sukat_sock_t *ctx, sukat_sock_client_t *client)
+static ret_t read_seqpacket(sukat_sock_t *ctx, sukat_sock_peer_t *client)
 {
   ERR(ctx, "Not implemented");
   (void)client;
@@ -911,7 +907,7 @@ static ret_t read_seqpacket(sukat_sock_t *ctx, sukat_sock_client_t *client)
 }
 
 static ret_t read_connectionless(sukat_sock_t *ctx,
-                                 sukat_sock_client_t *client)
+                                 sukat_sock_peer_t *client)
 {
   ERR(ctx, "Not implemented");
   (void)client;
@@ -926,31 +922,30 @@ static ret_t read_connectionless(sukat_sock_t *ctx,
  *        main.
  */
 static enum sukat_sock_send_return
-send_cached(sukat_sock_t *ctx, sukat_sock_client_t *client)
+send_cached(sukat_sock_t *ctx, sukat_sock_peer_t *peer)
 {
-  struct rw_cache *cache = (client) ? &client->write_cache : &ctx->write_cache;
+  struct rw_cache *cache = &peer->write_cache;
 
   if (cache->data && cache->len)
     {
       size_t sent = 0;
       ssize_t ret;
-      int fd = (client) ? client->fd : ctx->fd;
 
-      DBG(ctx, "Finishing send of %zu bytes to %s.", cache->len,
-          (client) ? "client" :"server");
+      DBG(ctx, "Finishing send of %zu bytes to fd %d",
+          cache->len, peer->info.fd);
 
       do
         {
-          ret = write(fd, cache->data + sent, cache->len - sent);
+          ret = write(peer->info.fd, cache->data + sent, cache->len - sent);
         } while (ret > 0 && (sent  += ret) < cache->len);
-      if (ret_was_ok(ctx, client, ret) != true)
+      if (ret_was_ok(ctx, peer, ret) != true)
         {
           return SUKAT_SEND_ERROR;
         }
       if (sent == cache->len)
         {
           free_cache(cache);
-          if (event_epollout(ctx, client, true) != true)
+          if (event_epollout(ctx, peer, true) != true)
             {
               return SUKAT_SEND_ERROR;
             }
@@ -958,7 +953,7 @@ send_cached(sukat_sock_t *ctx, sukat_sock_client_t *client)
         }
       else
         {
-          /* If we sent 0, we don't need to do anyting, just try again. */
+          /* If we sent 0, we don't need to do anything, just try again. */
           if (sent != 0)
             {
               size_t left = cache->len - sent;
@@ -982,33 +977,33 @@ send_cached(sukat_sock_t *ctx, sukat_sock_client_t *client)
 }
 
 static ret_t event_read(sukat_sock_t *ctx,
-                        sukat_sock_client_t *client)
+                        sukat_sock_peer_t *peer)
 {
   if (socket_connection_oriented(ctx->type))
     {
       if (ctx->type == SOCK_SEQPACKET)
         {
-          return read_seqpacket(ctx, client);
+          return read_seqpacket(ctx, peer);
         }
       else
         {
-          return read_stream(ctx, client);
+          return read_stream(ctx, peer);
         }
     }
-  return read_connectionless(ctx, client);
+  return read_connectionless(ctx, peer);
 }
 
 static void event_non_epollin(sukat_sock_t *ctx,
-                              sukat_sock_client_t *client, uint32_t events)
+                              sukat_sock_peer_t *peer, uint32_t events)
 {
-  void *caller_ctx = get_caller_ctx(ctx, client);
+  void *caller_ctx = get_caller_ctx(ctx, peer);
   int errval = (events & EPOLLHUP) ? ECONNABORTED :
     ECONNRESET;
 
   ERR(ctx, "%s event received from %s connection",
       (events == EPOLLERR) ? "Error" : "Disconnect",
-      (client) ? "client" : "main");
-  USE_CB(ctx, error_cb, caller_ctx, -1, errval);
+      (peer) ? "peer" : "main");
+  USE_CB(ctx, error_cb, caller_ctx, peer, errval);
 }
 
 static ret_t event_handle(sukat_sock_t *ctx, struct epoll_event *event)
@@ -1017,73 +1012,56 @@ static ret_t event_handle(sukat_sock_t *ctx, struct epoll_event *event)
 
   if (event->data.ptr == (void *)ctx)
     {
+      assert(ctx->is_server);
       if (event->events & !(EPOLLIN | EPOLLOUT))
         {
           event_non_epollin(ctx, NULL, event->events);
           return ERR_FATAL;
         }
-      else if (!ctx->is_server && ctx->connect_in_progress)
-        {
-          ret = client_continue_connect(ctx);
-        }
-      else if (ctx->is_server)
+      else if (socket_connection_oriented(ctx->type))
         {
           ret = server_accept_cb(ctx);
         }
       else
         {
-          if ((event->events & EPOLLOUT) && ctx->write_cache.len > 0)
-            {
-              if (send_cached(ctx, NULL) == SUKAT_SEND_ERROR)
-                {
-                  return ERR_FATAL;
-                }
-            }
-          else
-            {
-              return event_read(ctx, NULL);
-            }
+          ret = event_read(ctx, NULL);
         }
     }
   else
   {
-    sukat_sock_client_t *client = (sukat_sock_client_t *)(event->data.ptr);
+    sukat_sock_peer_t *peer = (sukat_sock_peer_t *)(event->data.ptr);
 
-      if (!client->closed)
+      if (!peer->closed)
         {
           if (event->events & !(EPOLLIN | EPOLLOUT))
             {
-              event_non_epollin(ctx, client, event->events);
-              destro_delete(ctx->destro_ctx, &client->destro_client_ctx);
+              event_non_epollin(ctx, peer, event->events);
+              ret = ERR_FATAL;
             }
           else
             {
-              if (event->events & EPOLLOUT)
+              if (peer->connect_in_progress)
                 {
-                  if (client->write_cache.len == 0)
+                  ret = client_continue_connect(ctx, peer);
+                }
+              else if (event->events & EPOLLOUT)
+                {
+                  assert(peer->write_cache.len > 0);
+                  if (send_cached(ctx, peer) == SUKAT_SEND_ERROR)
                     {
-                      ERR(ctx, "Epollout set although nothing to send");
-                    }
-                  else
-                    {
-                      if (send_cached(ctx, client) == SUKAT_SEND_ERROR)
-                        {
-                          destro_delete(ctx->destro_ctx,
-                                        &client->destro_client_ctx);
-                        }
+                      ret = ERR_FATAL;
                     }
                 }
               else
                 {
-                  ret = event_read(ctx, client);
-
-                  if (ret != ERR_OK)
+                  ret = event_read(ctx, peer);
+                }
+              if (ret != ERR_OK)
+                {
+                  destro_delete(ctx->destro_ctx, &peer->destro_client_ctx);
+                  // Server can't have fatal errors from peers.
+                  if (ctx->is_server)
                     {
-                      if (!client->destroyed)
-                        {
-                          destro_delete(ctx->destro_ctx,
-                                        &client->destro_client_ctx);
-                        }
                       ret = ERR_BREAK;
                     }
                 }
@@ -1098,6 +1076,8 @@ int sukat_sock_read(sukat_sock_t *ctx, int timeout)
 {
   int nfds;
   ret_t ret = ERR_OK;
+  destro_client_t *peer_destro =
+    (ctx->is_server) ? NULL : &ctx->peer->destro_client_ctx;
 
   if (!ctx)
     {
@@ -1128,8 +1108,8 @@ int sukat_sock_read(sukat_sock_t *ctx, int timeout)
         {
           timeout = 0;
         }
-    } while (nfds > 0 && destro_is_deleted(ctx->destro_ctx, NULL) != true &&
-             ctx->n_connections > 0 && ret != ERR_FATAL);
+    } while (nfds > 0 && destro_is_deleted(ctx->destro_ctx, peer_destro) != true
+             && ctx->n_connections > 0 && ret != ERR_FATAL);
 
 out:
   if (ret == ERR_BREAK)
@@ -1146,6 +1126,8 @@ sukat_sock_t *sukat_sock_create(struct sukat_sock_params *params,
   sukat_sock_t *ctx;
   struct destro_params dparams = { };
   struct destro_cbs dcbs = { };
+  int fd = -1;
+  sukat_sock_peer_t *peer = NULL;
 
   if (!params)
     {
@@ -1161,19 +1143,42 @@ sukat_sock_t *sukat_sock_create(struct sukat_sock_params *params,
     {
       return NULL;
     }
-  ctx->fd = ctx->epoll_fd = ctx->master_epoll_fd = -1;
-  ctx->is_server = params->server;
-  ctx->domain = params->domain;
-  ctx->type = params->type;
-  ctx->caller_ctx = params->caller_ctx;
   if (cbs)
     {
       memcpy(&ctx->cbs, cbs, sizeof(*cbs));
     }
-  ctx->fd = socket_create(ctx, params);
-  if (ctx->fd < 0)
+  ctx->epoll_fd = ctx->master_epoll_fd = -1;
+  ctx->is_server = params->server;
+  if (ctx->is_server)
+    {
+      ctx->info.fd = -1;
+    }
+  else
+    {
+      peer = (sukat_sock_peer_t *)calloc(1, sizeof(*peer));
+      if (!peer)
+        {
+          ERR(ctx, "Couldn't allocate memory for main peer: %s",
+              strerror(errno));
+          goto fail;
+        }
+      peer->info.fd = -1;
+    }
+  ctx->domain = params->domain;
+  ctx->type = params->type;
+  ctx->caller_ctx = params->caller_ctx;
+  fd = socket_create(ctx, params, peer);
+  if (fd < 0)
     {
       goto fail;
+    }
+  if (peer)
+    {
+      peer->info.fd = fd;
+    }
+  else
+    {
+      ctx->info.fd = fd;
     }
   ctx->epoll_fd = epoll_create1(EPOLL_CLOEXEC);
   if (!ctx->epoll_fd) {
@@ -1200,7 +1205,8 @@ sukat_sock_t *sukat_sock_create(struct sukat_sock_params *params,
         }
       ctx->master_epoll_fd = params->master_epoll_fd;
     }
-  if (event_add_to_ctx(ctx, ctx->fd, ctx, EPOLL_CTL_ADD, EPOLLIN) != true)
+  if (event_add_to_ctx(ctx, fd, (peer) ? (void *)peer : (void *)ctx,
+                       EPOLL_CTL_ADD, EPOLLIN) != true)
     {
       goto fail;
     }
@@ -1216,19 +1222,19 @@ sukat_sock_t *sukat_sock_create(struct sukat_sock_params *params,
       ERR(ctx, "Failed to create delayed destruction context");
       goto fail;
     }
-  if (!ctx->is_server)
+  if (peer)
     {
-      if (ctx->connect_in_progress)
+      if (peer->connect_in_progress)
         {
-          event_epollout(ctx, NULL, false);
+          event_epollout(ctx, peer, false);
         }
       else if (socket_connection_oriented(ctx->type))
         {
           bool destroyed_in_between;
 
           destro_cb_enter(ctx->destro_ctx);
-          USE_CB(ctx, conn_cb,
-                 ctx->caller_ctx, NULL, &ctx->storage, ctx->slen, false);
+          USE_CB(ctx, conn_cb, ctx->caller_ctx, peer, &peer->info.storage,
+                 peer->info.slen, false);
           destroyed_in_between = destro_is_deleted(ctx->destro_ctx, NULL);
           destro_cb_exit(ctx->destro_ctx);
 
@@ -1237,6 +1243,7 @@ sukat_sock_t *sukat_sock_create(struct sukat_sock_params *params,
               return NULL;
             }
         }
+      ctx->peer = peer;
     }
 
   return ctx;
@@ -1252,6 +1259,11 @@ void sukat_sock_destroy(sukat_sock_t *ctx)
     {
       if (ctx->destro_ctx)
         {
+          if (!ctx->is_server && ctx->peer)
+            {
+              ctx->peer->destroyed = true;
+              destro_delete(ctx->destro_ctx, &ctx->peer->destro_client_ctx);
+            }
           destro_delete(ctx->destro_ctx, NULL);
         }
       else
@@ -1273,31 +1285,32 @@ int sukat_sock_get_epoll_fd(sukat_sock_t *ctx)
 }
 
 static enum sukat_sock_send_return send_stream_msg(sukat_sock_t *ctx,
-                                                   sukat_sock_client_t *client,
+                                                   sukat_sock_peer_t *peer,
                                                    uint8_t *msg, size_t msg_len)
 {
   ssize_t ret;
   size_t sent = 0;
-  int fd = (client) ? client->fd : ctx->fd;
+  int fd;
 
-  DBG(ctx, "Sending %zu bytes of stream to %s", msg_len,
-      (client) ? "client" : "server");
+  assert(ctx != NULL && peer != NULL);
+  DBG(ctx, "Sending %zu bytes of stream to %d", msg_len, peer->info.fd);
+  fd = peer->info.fd;
 
   do
     {
       ret = write(fd, msg + sent, msg_len - sent);
     }
   while (ret > 0 && (sent += ret) < msg_len);
-  if (ret_was_ok(ctx, client, ret) == true)
+  if (ret_was_ok(ctx, peer, ret) == true)
     {
       /* If we cant send a single byte, just return EAGAIN */
       if (sent == 0)
         {
           return SUKAT_SEND_EAGAIN;
         }
-      if (cache(ctx, client, msg + sent, msg_len - sent, true) == true)
+      if (cache(ctx, peer, msg + sent, msg_len - sent, true) == true)
         {
-          if ((msg_len == sent) || event_epollout(ctx, client, false) == true)
+          if ((msg_len == sent) || event_epollout(ctx, peer, false) == true)
             {
               return SUKAT_SEND_OK;
             }
@@ -1307,7 +1320,7 @@ static enum sukat_sock_send_return send_stream_msg(sukat_sock_t *ctx,
 }
 
 static enum sukat_sock_send_return send_dgram_msg(sukat_sock_t *ctx,
-                                                  sukat_sock_client_t *client,
+                                                  sukat_sock_peer_t *client,
                                                   uint8_t *msg, size_t msg_len)
 {
   //TODO.
@@ -1319,7 +1332,7 @@ static enum sukat_sock_send_return send_dgram_msg(sukat_sock_t *ctx,
 }
 
 static enum sukat_sock_send_return send_seqm_msg(sukat_sock_t *ctx,
-                                                 sukat_sock_client_t *client,
+                                                 sukat_sock_peer_t *client,
                                                  uint8_t *msg, size_t msg_len)
 {
   //TODO.
@@ -1331,23 +1344,28 @@ static enum sukat_sock_send_return send_seqm_msg(sukat_sock_t *ctx,
 }
 
 enum sukat_sock_send_return sukat_send_msg(sukat_sock_t *ctx,
-                                           sukat_sock_client_t *client,
+                                           sukat_sock_peer_t *peer,
                                            uint8_t *msg, size_t msg_len)
 {
   enum sukat_sock_send_return ret = SUKAT_SEND_OK;
 
-  if (!ctx)
+  if (!peer && !ctx->is_server && ctx->peer)
     {
+      peer = ctx->peer;
+    }
+  if (!ctx || !peer)
+    {
+      ERR(ctx, "No peer given to send");
       return SUKAT_SEND_ERROR;
     }
-  if (ctx->connect_in_progress)
+  if (peer->connect_in_progress)
     {
       ERR(ctx, "Cannot send message, since connect still in progress");
       errno = EINPROGRESS;
       return SUKAT_SEND_ERROR;
     }
 
-  ret = send_cached(ctx, client);
+  ret = send_cached(ctx, peer);
   if (ret != SUKAT_SEND_OK)
     {
       return ret;
@@ -1356,19 +1374,19 @@ enum sukat_sock_send_return sukat_send_msg(sukat_sock_t *ctx,
     {
       if (ctx->type == SOCK_STREAM)
         {
-          return send_stream_msg(ctx, client, msg, msg_len);
+          return send_stream_msg(ctx, peer, msg, msg_len);
         }
-      return send_seqm_msg(ctx, client, msg, msg_len);
+      return send_seqm_msg(ctx, peer, msg, msg_len);
     }
-  return send_dgram_msg(ctx, client, msg, msg_len);
+  return send_dgram_msg(ctx, peer, msg, msg_len);
 }
 
-void sukat_sock_disconnect(sukat_sock_t *ctx, sukat_sock_client_t *client)
+void sukat_sock_disconnect(sukat_sock_t *ctx, sukat_sock_peer_t *peer)
 {
-  if (ctx != NULL && client != NULL)
+  if (ctx != NULL && peer != NULL)
     {
-      client->destroyed = true;
-      destro_delete(ctx->destro_ctx, &client->destro_client_ctx);
+      peer->destroyed = true;
+      destro_delete(ctx->destro_ctx, &peer->destro_client_ctx);
     }
 }
 
@@ -1416,9 +1434,13 @@ char *sukat_sock_stringify_peer(struct sockaddr_storage *saddr, size_t sock_len,
 
 uint16_t sukat_sock_get_port(sukat_sock_t *ctx)
 {
+  if (!ctx)
+    {
+      return 0;
+    }
   if (ctx->domain == AF_INET || ctx->domain == AF_INET6)
     {
-      return ntohs(ctx->sin.sin_port);
+      return ntohs(ctx->info.sin.sin_port);
     }
   ERR(ctx, "Port asked for type %d", ctx->domain);
   return 0;

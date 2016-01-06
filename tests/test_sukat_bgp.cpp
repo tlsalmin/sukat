@@ -76,7 +76,7 @@ TEST_F(sukat_bgp_test, sukat_bgp_test_init)
   const uint16_t server_as = 14, client_as = 15;
   const uint32_t server_bgp = 35, client_bgp = 36;
   char portbuf[strlen("65535") + 1];
-  sukat_bgp_client_t *client_from_server;
+  sukat_bgp_client_t *client_from_server, *server_from_client;
   uint16_t port;
   int err;
 
@@ -117,6 +117,7 @@ TEST_F(sukat_bgp_test, sukat_bgp_test_init)
   err = sukat_bgp_read(client, 100);
   EXPECT_EQ(0, err);
   EXPECT_EQ(true, tctx.open_visited);
+  server_from_client = tctx.newest_client;
   tctx.open_visited = false;
 
   tctx.match_as_num = client_as;
@@ -129,6 +130,7 @@ TEST_F(sukat_bgp_test, sukat_bgp_test_init)
   EXPECT_NE(nullptr, client_from_server);
 
   sukat_bgp_disconnect(server, client_from_server);
+  sukat_bgp_disconnect(client, server_from_client);
   sukat_bgp_destroy(client);
   sukat_bgp_destroy(server);
 }

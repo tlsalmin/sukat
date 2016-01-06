@@ -5,7 +5,7 @@
 
 static inline void test_log_cb(enum sukat_log_lvl lvl, const char *msg)
 {
-  const bool enable_logging = false;
+  const bool enable_logging = true;
   const bool log_errors = false;
 
   if (enable_logging || (log_errors == true && lvl == SUKAT_LOG_ERROR))

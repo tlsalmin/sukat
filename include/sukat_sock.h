@@ -24,7 +24,7 @@
 #include "sukat_event.h"
 
 typedef struct sukat_sock_ctx sukat_sock_t;
-typedef struct sukat_sock_client_ctx sukat_sock_client_t;
+typedef struct sukat_sock_peer_ctx sukat_sock_peer_t;
 
 /*!
  * Parameters for type AF_INET.
@@ -93,7 +93,7 @@ struct sukat_sock_params
  * @return != NULL      A new context to be given each time callbacks are
  *                      that are related to this connection.
  */
-typedef void *(*sukat_sock_new_conn_cb)(void *ctx, sukat_sock_client_t *client,
+typedef void *(*sukat_sock_new_conn_cb)(void *ctx, sukat_sock_peer_t *client,
                                         struct sockaddr_storage *sockaddr,
                                         size_t sock_len, bool disconnect);
 
@@ -123,7 +123,7 @@ typedef int (*sukat_sock_msg_len_cb)(void *ctx, uint8_t *buf, size_t buf_len);
  * @param buf           Buffer containing message.
  * @param buf_len       Length of message.
  */
-typedef void (*sukat_sock_msg_cb)(void *ctx, sukat_sock_client_t *client,
+typedef void (*sukat_sock_msg_cb)(void *ctx, sukat_sock_peer_t *client,
                                   uint8_t *buf, size_t buf_len);
 
 /*!
@@ -136,7 +136,8 @@ typedef void (*sukat_sock_msg_cb)(void *ctx, sukat_sock_client_t *client,
  * @param id    id for which connection failed. -1 for main ctx failure.
  * @param errval error number describing problem
  */
-typedef void (*sukat_sock_error_cb)(void *ctx, int id, int errval);
+typedef void (*sukat_sock_error_cb)(void *ctx, sukat_sock_peer_t *peer,
+                                    int errval);
 
 /*!
  * Different callbacks invoked by the library, initializable by the caller
@@ -205,7 +206,7 @@ void sukat_sock_destroy(sukat_sock_t *ctx);
  * @param ctx           Main context.
  * @param client        Client to disconnect.
  */
-void sukat_sock_disconnect(sukat_sock_t *ctx, sukat_sock_client_t *client);
+void sukat_sock_disconnect(sukat_sock_t *ctx, sukat_sock_peer_t *client);
 
 /*!
  * Different possible return values for sukat API send calls.
@@ -231,7 +232,7 @@ enum sukat_sock_send_return
  * @return ::sukat_sock_send_return
  */
 enum sukat_sock_send_return sukat_send_msg(sukat_sock_t *ctx,
-                                           sukat_sock_client_t *client,
+                                           sukat_sock_peer_t *client,
                                            uint8_t *msg, size_t msg_len);
 
 /*!
