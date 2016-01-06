@@ -27,6 +27,20 @@ typedef struct sukat_sock_ctx sukat_sock_t;
 typedef struct sukat_sock_endpoint_ctx sukat_sock_endpoint_t;
 
 /*!
+ * Different possibilities for a new connection.
+ */
+typedef enum sukat_sock_new_conn_event
+{
+  SUKAT_SOCK_CONN_EVENT_CONNECT, /*!< A peer explicitly added by
+                                      ::sukat_sock_endpoint_add has been
+                                      contacted */
+  SUKAT_SOCK_CONN_EVENT_ACCEPTED, /*!< A new connection has been accepted by a
+                                       server endpoint. */
+  SUKAT_SOCK_CONN_EVENT_DISCONNECT /*!< An existing connection has been
+                                        disconnected */
+} sukat_sock_event_t;
+
+/*!
  * Callback invoked when the server gets a new connection. Also if set by a
  * added peer connection, it will be called after succesfully connecting to the
  * server.
@@ -35,8 +49,7 @@ typedef struct sukat_sock_endpoint_ctx sukat_sock_endpoint_t;
  * @param endpoint      Endpoint context that can be replied to.
  * @param sockaddr      Data identifying the connected peer.
  * @param sock_len      The length of the identifying information.
- * @param disconnect    True if an already connected connection was
- *                      disconnected.
+ * @param event         Event that occurred.
  *
  * @return NULL         Continue using this \p ctx for callback involving this
  *                      connection.
@@ -46,7 +59,8 @@ typedef struct sukat_sock_endpoint_ctx sukat_sock_endpoint_t;
 typedef void *(*sukat_sock_new_conn_cb)(void *ctx,
                                         sukat_sock_endpoint_t *endpoint,
                                         struct sockaddr_storage *sockaddr,
-                                        size_t sock_len, bool disconnect);
+                                        size_t sock_len,
+                                        sukat_sock_event_t event);
 
 /*!
  * Callback invoked each time anything longer than 1 byte is received from a

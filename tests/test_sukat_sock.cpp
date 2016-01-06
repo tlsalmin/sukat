@@ -275,12 +275,12 @@ struct test_client
 
 void *new_conn_cb(void *ctx, sukat_sock_endpoint_t *client,
                   struct sockaddr_storage *sockaddr,
-                  size_t sock_len, bool disconnect)
+                  size_t sock_len, sukat_sock_event_t event)
 {
   struct sun_test_ctx *tctx = (struct sun_test_ctx *)ctx;
 
   EXPECT_EQ(true, tctx->connected_should);
-  if (disconnect)
+  if (event == SUKAT_SOCK_CONN_EVENT_DISCONNECT)
     {
       EXPECT_EQ(true, tctx->connected_should_disconnect);
       tctx->n_disconnects++;
@@ -503,11 +503,15 @@ static void msg_cb(void *ctx, sukat_sock_endpoint_t *client, uint8_t *buf,
 
 void *new_conn_cb_for_read(void *ctx, sukat_sock_endpoint_t *client,
   __attribute__((unused))struct sockaddr_storage *sockaddr,
-  __attribute__((unused))size_t sock_len, bool disconnect)
+  __attribute__((unused))size_t sock_len,
+  sukat_sock_event_t event)
 {
   struct read_ctx *tctx = (struct read_ctx *)ctx;
   tctx->newest_client = client;
-  EXPECT_EQ(tctx->should_disconnect, disconnect);
+  if (tctx->should_disconnect)
+    {
+      EXPECT_EQ(SUKAT_SOCK_CONN_EVENT_DISCONNECT, event);
+    }
   tctx->connect_visited = true;
   return NULL;
 }
@@ -730,7 +734,7 @@ int len_cb_disconnects(void *ctx,
 void *disco_conn_cb(void *ctx, sukat_sock_endpoint_t *client,
                     __attribute__((unused)) struct sockaddr_storage *saddr,
                     __attribute__((unused)) size_t sock_len,
-                    __attribute__((unused)) bool disconnect)
+                    __attribute__((unused)) sukat_sock_event_t event)
 {
   struct cb_disco_ctx *tctx = (struct cb_disco_ctx *)ctx;
 
@@ -1046,14 +1050,17 @@ protected:
 
 void *inet_conn_cb(void *ctx, sukat_sock_endpoint_t *client,
                    struct sockaddr_storage *saddr, size_t slen,
-                   bool disconnect)
+                   sukat_sock_event_t event)
 {
   struct read_ctx *tctx = (struct read_ctx *)ctx;
   tctx->connect_visited = true;
   tctx->newest_client = client;
   (void)saddr;
   (void)slen;
-  EXPECT_EQ(tctx->should_disconnect, disconnect);
+  if (tctx->should_disconnect)
+    {
+      EXPECT_EQ(SUKAT_SOCK_CONN_EVENT_DISCONNECT, event);
+    }
   return NULL;
 }
 

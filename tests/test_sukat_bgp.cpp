@@ -25,7 +25,7 @@ protected:
   virtual void SetUp() {
       memset(&default_params, 0, sizeof(default_params));
       memset(&default_cbs, 0, sizeof(default_cbs));
-      default_params.port = random_port;
+      default_params.pinet.port = random_port;
       default_cbs.log_cb = test_log_cb;
   }
 
@@ -42,16 +42,17 @@ struct bgp_test_ctx
   struct {
       uint8_t open_should_visit:1;
       uint8_t open_visited:1;
-      uint8_t unused:8;
+      uint8_t disconnect_should:1;
+      uint8_t unused:5;
   };
-  sukat_bgp_client_t *newest_client;
+  sukat_bgp_peer_t *newest_client;
   uint8_t match_version;
   uint16_t match_as_num;
   uint32_t match_bgp_id;
 };
 
-void *open_cb(void *ctx, sukat_bgp_client_t *client, uint8_t version,
-              uint16_t as_num, uint32_t bgp_id)
+void *open_cb(void *ctx, sukat_bgp_peer_t *client, bgp_id_t *id,
+              sukat_sock_event_t event)
 {
   struct bgp_test_ctx *tctx = (struct bgp_test_ctx *)ctx;
 
@@ -61,15 +62,18 @@ void *open_cb(void *ctx, sukat_bgp_client_t *client, uint8_t version,
       EXPECT_EQ(true, tctx->open_should_visit);
       tctx->open_visited = true;
       tctx->newest_client = client;
-      EXPECT_EQ(tctx->match_version, version);
-      EXPECT_EQ(tctx->match_as_num, as_num);
-      EXPECT_EQ(tctx->match_bgp_id, bgp_id);
+      EXPECT_EQ(tctx->match_version, id->version);
+      EXPECT_EQ(tctx->match_as_num, id->as_num);
+      EXPECT_EQ(tctx->match_bgp_id, id->bgp_id);
+      if (tctx->disconnect_should)
+        {
+          EXPECT_EQ(SUKAT_SOCK_CONN_EVENT_DISCONNECT, event);
+        }
     }
 
   return NULL;
 }
 
-#if 0
 TEST_F(sukat_bgp_test, sukat_bgp_test_init)
 {
   sukat_bgp_t *server, *client;
@@ -77,34 +81,37 @@ TEST_F(sukat_bgp_test, sukat_bgp_test_init)
   const uint16_t server_as = 14, client_as = 15;
   const uint32_t server_bgp = 35, client_bgp = 36;
   char portbuf[strlen("65535") + 1];
-  sukat_bgp_client_t *client_from_server, *server_from_client;
-  uint16_t port;
+  sukat_bgp_peer_t *client_from_server, *server_from_client;
+  uint16_t server_port;
   int err;
 
   // Shouldn't work with NULL parameters
   server = sukat_bgp_create(NULL, NULL);
   EXPECT_EQ(nullptr, server);
 
-  default_params.my_as = server_as;
-  default_params.bgp_id = server_bgp;
+  default_params.id.as_num = server_as;
+  default_params.id.bgp_id = server_bgp;
   default_params.caller_ctx = (void *)&tctx;
-  default_params.server = true;
+  default_params.pinet.port = portbuf;
   default_cbs.open_cb = open_cb;
+
+  snprintf(portbuf, sizeof(portbuf), "0");
 
   server = sukat_bgp_create(&default_params, &default_cbs);
   EXPECT_NE(nullptr, server);
 
-  default_params.server = false;
-  default_params.my_as = client_as;
-  default_params.bgp_id = client_bgp;
+  default_params.id.as_num = client_as;
+  default_params.id.bgp_id = client_bgp;
 
-  port = sukat_sock_get_port(server->sock_ctx, NULL);
-  EXPECT_LT(0, port);
-  snprintf(portbuf, sizeof(portbuf), "%hu", port);
-  default_params.port = portbuf;
+  server_port = sukat_sock_get_port(server->endpoint);
+  EXPECT_LT(0, server_port);
 
   client = sukat_bgp_create(&default_params, &default_cbs);
   EXPECT_NE(nullptr, client);
+
+  snprintf(portbuf, sizeof(portbuf), "%hu", server_port);
+  server_from_client = sukat_bgp_peer_add(client, &default_params.pinet);
+  EXPECT_NE(nullptr, server_from_client);
 
   // Received on the server side
   tctx.match_as_num = server_as;
@@ -118,7 +125,6 @@ TEST_F(sukat_bgp_test, sukat_bgp_test_init)
   err = sukat_bgp_read(client, 100);
   EXPECT_EQ(0, err);
   EXPECT_EQ(true, tctx.open_visited);
-  server_from_client = tctx.newest_client;
   tctx.open_visited = false;
 
   tctx.match_as_num = client_as;
@@ -135,4 +141,3 @@ TEST_F(sukat_bgp_test, sukat_bgp_test_init)
   sukat_bgp_destroy(client);
   sukat_bgp_destroy(server);
 }
-#endif

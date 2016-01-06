@@ -632,7 +632,8 @@ static void sock_destro_close(void *main_ctx, void *client_ctx)
       close(endpoint->info.fd);
       if (!endpoint->destroyed)
         {
-          USE_CB(ctx, conn_cb, caller_ctx, endpoint, NULL, 0, true);
+          USE_CB(ctx, conn_cb, caller_ctx, endpoint, NULL, 0,
+                 SUKAT_SOCK_CONN_EVENT_DISCONNECT);
         }
       ctx->n_connections--;
     }
@@ -716,7 +717,8 @@ static ret_t server_accept_cb(sukat_sock_t *ctx,
                   LOG(ctx, "New client with fd %d", fd);
                   ctx->n_connections++;
                   USE_CB_WRET(ctx, client->endpoint_caller_ctx, conn_cb,
-                              ctx->caller_ctx, client, &saddr, slen, false);
+                              ctx->caller_ctx, client, &saddr, slen,
+                              SUKAT_SOCK_CONN_EVENT_ACCEPTED);
                   continue;
                 }
               free(client);
@@ -755,7 +757,8 @@ static ret_t client_continue_connect(sukat_sock_t *ctx,
           endpoint->connect_in_progress = false;
           event_epollout(ctx, endpoint, true);
           USE_CB_WRET(ctx, new_caller_ctx, conn_cb, caller_ctx, endpoint,
-                      &(endpoint->info.storage), endpoint->info.slen, false);
+                      &(endpoint->info.storage), endpoint->info.slen,
+                      SUKAT_SOCK_CONN_EVENT_CONNECT);
           if (new_caller_ctx)
             {
               endpoint->endpoint_caller_ctx = new_caller_ctx;
@@ -1204,7 +1207,7 @@ sukat_sock_endpoint_t
                       USE_CB_WRET(ctx, new_caller_ctx, conn_cb,
                                   ctx->caller_ctx, endpoint,
                                   &endpoint->info.storage, endpoint->info.slen,
-                                  false);
+                                  SUKAT_SOCK_CONN_EVENT_CONNECT);
                       destroyed_in_between =
                         destro_is_deleted(ctx->destro_ctx, NULL);
                       destro_cb_exit(ctx->destro_ctx);
