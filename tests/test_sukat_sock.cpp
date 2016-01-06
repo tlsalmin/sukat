@@ -919,6 +919,92 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_removal_in_cb)
   tctx.disco_in_msg = tctx.destroy_in_msg = false;
 }
 
+TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_peering)
+{
+  sukat_sock_t *peer1, *peer2;
+  sukat_sock_endpoint_t *endpoint1, *endpoint2;
+  sukat_sock_endpoint_t *peer1_to_peer2, *peer2_to_peer1;
+  sukat_sock_endpoint_t *peer1_from_peer2, *peer2_from_peer1;
+  char *peer1_name, *peer2_name;
+  struct read_ctx tctx = { };
+  int err;
+  uint8_t buf[BUFSIZ];
+  struct test_msg *msg = (struct test_msg *)buf;
+  enum sukat_sock_send_return send_ret;
+
+  memset(buf, 0, sizeof(buf));
+  default_cbs.msg_len_cb = len_cb;
+  default_cbs.msg_cb = msg_cb;
+  default_cbs.conn_cb = new_conn_cb_for_read;
+  default_params.caller_ctx = (void *)&tctx;
+
+  peer1 = sukat_sock_create(&default_params, &default_cbs);
+  EXPECT_NE(nullptr, peer1);
+  peer2 = sukat_sock_create(&default_params, &default_cbs);
+  EXPECT_NE(nullptr, peer2);
+
+  default_endpoint_params.server = true;
+  endpoint1 = sukat_sock_endpoint_add(peer1, &default_endpoint_params);
+  EXPECT_NE(nullptr, endpoint1);
+  peer1_name = strdup(default_endpoint_params.punix.name);
+  EXPECT_NE(nullptr, peer1_name);
+
+  get_random_socket();
+  endpoint2 = sukat_sock_endpoint_add(peer2, &default_endpoint_params);
+  EXPECT_NE(nullptr, endpoint2);
+  peer2_name = strdup(default_endpoint_params.punix.name);
+  EXPECT_NE(nullptr, peer2_name);
+
+  default_endpoint_params.server = false;
+  peer1_to_peer2 = sukat_sock_endpoint_add(peer1, &default_endpoint_params);
+  EXPECT_NE(nullptr, peer1_to_peer2);
+  default_endpoint_params.punix.name = peer1_name;
+  peer2_to_peer1 = sukat_sock_endpoint_add(peer2, &default_endpoint_params);
+  EXPECT_NE(nullptr, peer2_to_peer1);
+
+  err = sukat_sock_read(peer1, 0);
+  EXPECT_EQ(0, err);
+  EXPECT_EQ(true, tctx.connect_visited);
+  peer2_from_peer1 = tctx.newest_client;
+
+  tctx.connect_visited = false;
+  err = sukat_sock_read(peer2, 0);
+  EXPECT_EQ(0, err);
+  EXPECT_EQ(true, tctx.connect_visited);
+  peer1_from_peer2 = tctx.newest_client;
+  tctx.connect_visited = false;
+
+  msg->len = 500;
+  send_ret = sukat_send_msg(peer1, peer1_to_peer2, buf, msg->len);
+  EXPECT_EQ(SUKAT_SEND_OK, send_ret);
+  send_ret = sukat_send_msg(peer2, peer2_to_peer1, buf, msg->len);
+  EXPECT_EQ(SUKAT_SEND_OK, send_ret);
+
+  tctx.msg_cb_should_visit = tctx.len_cb_should_visit = true;
+  err = sukat_sock_read(peer1, 0);
+  EXPECT_EQ(0, err);
+  EXPECT_EQ(true, tctx.len_cb_visited);
+  EXPECT_EQ(true, tctx.msg_cb_visited);
+  tctx.msg_cb_visited = tctx.len_cb_visited = false;
+
+  err = sukat_sock_read(peer2, 0);
+  EXPECT_EQ(0, err);
+  EXPECT_EQ(true, tctx.len_cb_visited);
+  EXPECT_EQ(true, tctx.msg_cb_visited);
+  tctx.msg_cb_visited = tctx.len_cb_visited = false;
+
+  sukat_sock_disconnect(peer1, peer2_from_peer1);
+  sukat_sock_disconnect(peer2, peer1_from_peer2);
+  sukat_sock_disconnect(peer1, peer1_to_peer2);
+  sukat_sock_disconnect(peer2, peer2_to_peer1);
+  sukat_sock_disconnect(peer1, endpoint1);
+  sukat_sock_disconnect(peer2, endpoint2);
+  sukat_sock_destroy(peer1);
+  sukat_sock_destroy(peer2);
+  free(peer1_name);
+  free(peer2_name);
+}
+
 class sukat_sock_test_inet : public ::testing::Test
 {
 protected:
