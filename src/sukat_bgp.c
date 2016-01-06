@@ -332,6 +332,7 @@ sukat_bgp_t *sukat_bgp_create(struct sukat_bgp_params *params,
       const char *bind_to = "127.0.0.1";
       struct sukat_sock_params sock_params = { };
       struct sukat_sock_cbs sock_cbs = { };
+      struct sukat_sock_endpoint_params sock_endp = { };
 
       ctx->caller_ctx = params->caller_ctx;
       if (cbs)
@@ -343,13 +344,13 @@ sukat_bgp_t *sukat_bgp_create(struct sukat_bgp_params *params,
       sock_cbs.msg_cb = bgp_msg_cb;
       sock_cbs.conn_cb = bgp_conn_cb;
 
-      sock_params.pinet.ip = (!params->ip && params->server) ? bind_to :
+      sock_endp.pinet.ip = (!params->ip && params->server) ? bind_to :
         params->ip;
-      sock_params.pinet.port = (params->port) ? params->port : bgp_port;
-      sock_params.domain = AF_UNSPEC;
-      sock_params.type = SOCK_STREAM;
+      sock_endp.pinet.port = (params->port) ? params->port : bgp_port;
+      sock_endp.domain = AF_UNSPEC;
+      sock_endp.type = SOCK_STREAM;
       sock_params.caller_ctx = (void *)ctx;
-      ctx->flags.server = sock_params.server = params->server;
+      ctx->flags.server = sock_endp.server = params->server;
       if (cbs)
         {
           memcpy(&ctx->cbs, cbs, sizeof(ctx->cbs));

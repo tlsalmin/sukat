@@ -27,60 +27,6 @@ typedef struct sukat_sock_ctx sukat_sock_t;
 typedef struct sukat_sock_endpoint_ctx sukat_sock_endpoint_t;
 
 /*!
- * Parameters for type AF_INET.
- */
-struct sukat_sock_params_inet
-{
-  const char *ip;
-  const char *port;
-};
-
-/*!
- * Parameters for AF_UNIX
- */
-struct sukat_sock_params_unix
-{
-  const char *name;
-  bool is_abstract;
-};
-
-/*!
- * Parameters for AF_TIPC
- */
-struct sukat_sock_params_tipc
-{
-  uint32_t port_type;
-  uint32_t port_instance;
-  signed char scope;
-};
-
-/*!
- * Parameters for \ref sukat_sock_create
- */
-struct sukat_sock_params
-{
-  int domain; //!< AF_UNIX, AF_UNSPEC(AF_INET or AF_INET6) or AF_TIPC
-  int type; //!< SOCK_STREAM, SOCK_DGRAM, SOCK_SEQPACKET or SOCK_RDM.
-  int master_epoll_fd; /*!< If ::master_epoll_fd_set is true, the sukat_sock
-                            API will add its own epoll fd to this master
-                            epoll fd. */
-  bool master_epoll_fd_set; //!< If true, use master_epoll_fd
-
-  /*! Parameters specific to both */
-  void *caller_ctx; //!< Context passed to callbacks.
-
-  /*! Parameters specific to an end-point */
-  size_t listen; //!< If non-zero, use for listen parameter (man 2 listen).
-  bool server; //!< If true, act as server.
-  union
-    {
-      struct sukat_sock_params_inet pinet;
-      struct sukat_sock_params_unix punix;
-      struct sukat_sock_params_tipc ptipc;
-    };
-};
-
-/*!
  * Callback invoked when the server gets a new connection. Also if set by a
  * added peer connection, it will be called after succesfully connecting to the
  * server.
@@ -145,6 +91,18 @@ typedef void (*sukat_sock_error_cb)(void *ctx, sukat_sock_endpoint_t *endpoint,
                                     int errval);
 
 /*!
+ * Parameters for \ref sukat_sock_create
+ */
+struct sukat_sock_params
+{
+  int master_epoll_fd; /*!< If ::master_epoll_fd_set is true, the sukat_sock
+                            API will add its own epoll fd to this master
+                            epoll fd. */
+  bool master_epoll_fd_set; //!< If true, use master_epoll_fd
+  void *caller_ctx; //!< Default context passed to callbacks.
+};
+
+/*!
  * Different callbacks invoked by the library, initializable by the caller
  * in sukat_sock_create.
  */
@@ -171,6 +129,53 @@ sukat_sock_t *sukat_sock_create(struct sukat_sock_params *params,
                                 struct sukat_sock_cbs *cbs);
 
 /*!
+ * Parameters for type AF_INET/AF_INET6/AF_UNSPEC.
+ */
+struct sukat_sock_params_inet
+{
+  const char *ip; //!< IP or DNS-name.
+  const char *port;
+};
+
+/*!
+ * Parameters for AF_UNIX
+ */
+struct sukat_sock_params_unix
+{
+  const char *name; //!< Path or abstract name.
+  bool is_abstract; //!< If true, use abstract sockets.
+};
+
+/*!
+ * Parameters for AF_TIPC
+ */
+struct sukat_sock_params_tipc
+{
+  uint32_t port_type;
+  uint32_t port_instance;
+  signed char scope;
+};
+
+
+/*!
+ * Parameters for an end-point.
+ */
+struct sukat_sock_endpoint_params
+{
+  void *caller_ctx; //!< Context passed to callbacks for end-point.
+  int domain; //!< AF_UNIX, AF_UNSPEC(AF_INET or AF_INET6) or AF_TIPC
+  int type; //!< SOCK_STREAM, SOCK_DGRAM, SOCK_SEQPACKET or SOCK_RDM.
+  size_t listen; //!< If non-zero, use for listen parameter (man 2 listen).
+  bool server; //!< If true, act as server.
+  union
+    {
+      struct sukat_sock_params_inet pinet;
+      struct sukat_sock_params_unix punix;
+      struct sukat_sock_params_tipc ptipc;
+    };
+};
+
+/*!
  * @brief Adds an end-point to the sock context.
  *
  * @param ctx           Context created with ::sukat_sock_create
@@ -182,8 +187,9 @@ sukat_sock_t *sukat_sock_create(struct sukat_sock_params *params,
  *                      defined).
  * @return NULL         Failure
  */
-sukat_sock_endpoint_t *sukat_sock_endpoint_add(sukat_sock_t *ctx,
-                                               struct sukat_sock_params *params);
+sukat_sock_endpoint_t
+*sukat_sock_endpoint_add(sukat_sock_t *ctx,
+                         struct sukat_sock_endpoint_params *params);
 
 /*!
  * @brief Reads all data in socket context

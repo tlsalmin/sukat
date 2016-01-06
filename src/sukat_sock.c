@@ -124,7 +124,7 @@ static bool socket_connection_oriented(int type)
     }                                                                         \
   while (0)
 
-static char *socket_log_params(struct sukat_sock_params *params,
+static char *socket_log_params(struct sukat_sock_endpoint_params *params,
                                char *buf, size_t buf_len)
 {
 
@@ -318,7 +318,7 @@ static bool set_flags(sukat_sock_t *ctx, int fd)
   return false;
 }
 
-static void socket_fill_tipc(struct sukat_sock_params *params,
+static void socket_fill_tipc(struct sukat_sock_endpoint_params *params,
                              struct sockaddr_tipc *tipc,
                              socklen_t *addrlen)
 {
@@ -343,7 +343,7 @@ static void socket_fill_tipc(struct sukat_sock_params *params,
 }
 
 static bool socket_fill_unix(sukat_sock_t *ctx,
-                             struct sukat_sock_params *params,
+                             struct sukat_sock_endpoint_params *params,
                              struct sockaddr_un *sun, socklen_t *addrlen)
 {
   size_t n_used = 0;
@@ -450,7 +450,8 @@ static bool is_inet(int domain)
  * @return >= 0         Valid fd.
  * @return < 0          Failure.
  * */
-static int socket_create(sukat_sock_t *ctx, struct sukat_sock_params *params,
+static int socket_create(sukat_sock_t *ctx,
+                         struct sukat_sock_endpoint_params *params,
                          sukat_sock_endpoint_t *peer)
 {
   int main_fd = -1;
@@ -1155,9 +1156,15 @@ fail:
   return NULL;
 }
 
-sukat_sock_endpoint_t *sukat_sock_endpoint_add(sukat_sock_t *ctx,
-                                               struct sukat_sock_params *params)
+sukat_sock_endpoint_t
+*sukat_sock_endpoint_add(sukat_sock_t *ctx,
+                         struct sukat_sock_endpoint_params *params)
 {
+  if (!params)
+    {
+      ERR(ctx, "No parameters for end-point");
+      return NULL;
+    }
   if (ctx)
     {
       sukat_sock_endpoint_t *endpoint =

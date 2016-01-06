@@ -14,7 +14,6 @@ extern "C"{
 #include <sys/un.h>
 }
 
-#if 0
 class sukat_sock_test_tipc : public ::testing::Test
 {
 protected:
@@ -32,6 +31,7 @@ protected:
   // cleaning up each test, you can define the following methods:
   virtual void SetUp() {
       memset(&default_cbs, 0, sizeof(default_cbs));
+      memset(&default_endpoint_params, 0, sizeof(default_endpoint_params));
       default_cbs.log_cb = test_log_cb;
       memset(&default_params, 0, sizeof(default_params));
       // Code here will be called immediately after the constructor (right
@@ -42,7 +42,7 @@ protected:
       // Code here will be called immediately after each test (right
       // before the destructor).
   }
-  void get_random_port(struct sukat_sock_params *params)
+  void get_random_port(struct sukat_sock_endpoint_params *params)
     {
       static bool random_seeded;
 
@@ -144,6 +144,7 @@ protected:
   // Objects declared here can be used by all tests
   struct sukat_sock_cbs default_cbs;
   struct sukat_sock_params default_params;
+  struct sukat_sock_endpoint_params default_endpoint_params;
 };
 
 
@@ -156,16 +157,17 @@ struct test_ctx
 TEST_F(sukat_sock_test_tipc, sukat_sock_test_tipc)
 {
   sukat_sock_t *ctx, *client_ctx;
+  sukat_sock_endpoint_t *server_endpoint, *client_endpoint;
   struct test_ctx tctx = { };
   bool bret;
   int err;
 
   default_params.caller_ctx = &tctx;
-  default_params.server = true;
-  default_params.domain = AF_TIPC;
-  default_params.type = SOCK_SEQPACKET;
+  default_endpoint_params.server = true;
+  default_endpoint_params.domain = AF_TIPC;
+  default_endpoint_params.type = SOCK_SEQPACKET;
 
-  get_random_port(&default_params);
+  get_random_port(&default_endpoint_params);
 
   if (check_tipc() == false)
     {
@@ -176,25 +178,31 @@ TEST_F(sukat_sock_test_tipc, sukat_sock_test_tipc)
 
   ctx = sukat_sock_create(&default_params, &default_cbs);
   ASSERT_NE(nullptr, ctx);
+  server_endpoint = sukat_sock_endpoint_add(ctx, &default_endpoint_params);
+  EXPECT_NE(nullptr, server_endpoint);
 
-  default_params.server = false;
-  bret = wait_for_tipc_server(ctx, default_params.ptipc.port_type,
-                              default_params.ptipc.port_instance, 1000);
+  default_endpoint_params.server = false;
+  bret = wait_for_tipc_server(ctx, default_endpoint_params.ptipc.port_type,
+                              default_endpoint_params.ptipc.port_instance, 1000);
   EXPECT_EQ(true, bret);
 
   client_ctx = sukat_sock_create(&default_params, &default_cbs);
   ASSERT_NE(nullptr, client_ctx);
+  client_endpoint =
+    sukat_sock_endpoint_add(client_ctx, &default_endpoint_params);
+  EXPECT_NE(nullptr, client_endpoint);
 
   err = sukat_sock_read(ctx, 0);
   EXPECT_NE(-1, err);
 
+  sukat_sock_disconnect(client_ctx, client_endpoint);
   sukat_sock_destroy(client_ctx);
   err = sukat_sock_read(ctx, 0);
   EXPECT_NE(-1, err);
 
+  sukat_sock_disconnect(ctx, server_endpoint);
   sukat_sock_destroy(ctx);
 }
-#endif
 
 class sukat_sock_test_sun : public ::testing::Test
 {
@@ -214,18 +222,19 @@ protected:
   virtual void SetUp() {
       memset(&default_cbs, 0, sizeof(default_cbs));
       memset(&default_params, 0, sizeof(default_params));
+      memset(&default_endpoint_params, 0, sizeof(default_endpoint_params));
 
       default_cbs.log_cb = test_log_cb;
 
       get_random_socket();
-      default_params.punix.name = sun_template;
-      default_params.domain = AF_UNIX;
-      default_params.punix.is_abstract = true;
-      default_params.type = SOCK_STREAM;
+      default_endpoint_params.punix.name = sun_template;
+      default_endpoint_params.domain = AF_UNIX;
+      default_endpoint_params.punix.is_abstract = true;
+      default_endpoint_params.type = SOCK_STREAM;
   }
 
   virtual void TearDown() {
-      default_params.punix.name = NULL;
+      default_endpoint_params.punix.name = NULL;
       // Code here will be called immediately after each test (right
       // before the destructor).
   }
@@ -244,6 +253,7 @@ protected:
   // Objects declared here can be used by all tests
   struct sukat_sock_cbs default_cbs;
   struct sukat_sock_params default_params;
+  struct sukat_sock_endpoint_params default_endpoint_params;
   char sun_template[sizeof(((struct sockaddr_un *)0)->sun_path) - 2];
 };
 
@@ -296,8 +306,16 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_faulty_param)
   EXPECT_EQ(nullptr, server);
 
   // Test peer without main
-  endpoint = sukat_sock_endpoint_add(NULL, &default_params);
+  endpoint = sukat_sock_endpoint_add(NULL, &default_endpoint_params);
   EXPECT_EQ(nullptr, endpoint);
+
+  server = sukat_sock_create(&default_params, &default_cbs);
+  EXPECT_NE(nullptr, server);
+
+  endpoint = sukat_sock_endpoint_add(server, NULL);
+  EXPECT_EQ(nullptr, endpoint);
+
+  sukat_sock_destroy(server);
 }
 
 TEST_F(sukat_sock_test_sun, sukat_sock_test_external_epoll)
@@ -310,7 +328,6 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_external_epoll)
   EXPECT_NE(-1, master_epoll);
 
   // First with a faulty master_epoll.
-  default_params.server = true;
   default_params.master_epoll_fd_set = true;
   default_params.master_epoll_fd = -1;
   server = sukat_sock_create(&default_params, &default_cbs);
@@ -335,17 +352,17 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_connect)
   default_params.caller_ctx = &tctx;
   default_cbs.conn_cb = new_conn_cb;
 
-  default_params.server = true;
   server = sukat_sock_create(&default_params, &default_cbs);
   EXPECT_NE(nullptr, server);
-  server_endpoint = sukat_sock_endpoint_add(server, &default_params);
+  default_endpoint_params.server = true;
+  server_endpoint = sukat_sock_endpoint_add(server, &default_endpoint_params);
   EXPECT_NE(nullptr, server_endpoint);
 
-  default_params.server = false;
   default_cbs.conn_cb = NULL;
   client = sukat_sock_create(&default_params, &default_cbs);
   EXPECT_NE(nullptr, server);
-  client_endpoint = sukat_sock_endpoint_add(client, &default_params);
+  default_endpoint_params.server = false;
+  client_endpoint = sukat_sock_endpoint_add(client, &default_endpoint_params);
   EXPECT_NE(nullptr, client_endpoint);
 
   tctx.connected_should = true;
@@ -380,22 +397,22 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_connect_many)
   sukat_sock_endpoint_t *client_endpoints[n_clients];
   int err;
 
-  default_params.server = true;
   default_params.caller_ctx = &tctx;
   default_cbs.conn_cb = new_conn_cb;
   server = sukat_sock_create(&default_params, &default_cbs);
   EXPECT_NE(nullptr, server);
-  server_endpoint = sukat_sock_endpoint_add(server, &default_params);
+  default_endpoint_params.server = true;
+  server_endpoint = sukat_sock_endpoint_add(server, &default_endpoint_params);
   EXPECT_NE(nullptr, server_endpoint);
 
   default_cbs.conn_cb = NULL;
-  default_params.server = false;
+  default_endpoint_params.server = false;
   for (i = 0; i < n_clients; i++)
     {
       clients[i] = sukat_sock_create(&default_params, &default_cbs);
       EXPECT_NE(nullptr, clients[i]);
       client_endpoints[i] =
-        sukat_sock_endpoint_add(clients[i], &default_params);
+        sukat_sock_endpoint_add(clients[i], &default_endpoint_params);
       EXPECT_NE(nullptr, client_endpoints[i]);
     }
   tctx.connected_should = true;
@@ -511,20 +528,21 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_read)
   default_cbs.msg_len_cb = len_cb;
   default_cbs.conn_cb = new_conn_cb_for_read;
   default_cbs.msg_cb = msg_cb;
-  default_params.server = true;
+  default_endpoint_params.server = true;
   default_params.caller_ctx = (void *)&tctx;
   tctx.buf = buf;
   tctx.compare_payload = true;
 
   server = sukat_sock_create(&default_params, &default_cbs);
   ASSERT_NE(nullptr, server);
-  server_endpoint = sukat_sock_endpoint_add(server, &default_params);
+  server_endpoint = sukat_sock_endpoint_add(server, &default_endpoint_params);
   EXPECT_NE(nullptr, server_endpoint);
 
-  default_params.server = false;
+  default_endpoint_params.server = false;
   client_ctx = sukat_sock_create(&default_params, &default_cbs);
   ASSERT_NE(nullptr, client_ctx);
-  client_endpoint = sukat_sock_endpoint_add(client_ctx, &default_params);
+  client_endpoint =
+    sukat_sock_endpoint_add(client_ctx,&default_endpoint_params);
   EXPECT_NE(nullptr, client_endpoint);
 
   err = sukat_sock_read(server, 0);
@@ -773,18 +791,18 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_removal_in_cb)
   default_cbs.conn_cb = disco_conn_cb;
   default_cbs.msg_cb = disco_msg_cb;
   default_cbs.msg_len_cb = len_cb_disconnects;
-  default_params.server = true;
+  default_endpoint_params.server = true;
   default_params.caller_ctx = &tctx;
   server = sukat_sock_create(&default_params, &default_cbs);
   ASSERT_NE(nullptr, server);
-  server_endpoint = sukat_sock_endpoint_add(server, &default_params);
+  server_endpoint = sukat_sock_endpoint_add(server, &default_endpoint_params);
   EXPECT_NE(nullptr, server_endpoint);
   tctx.ctx = server;
 
-  default_params.server = false;
+  default_endpoint_params.server = false;
   client = sukat_sock_create(&default_params, &default_cbs);
   ASSERT_NE(nullptr, client);
-  client_endpoint = sukat_sock_endpoint_add(client, &default_params);
+  client_endpoint = sukat_sock_endpoint_add(client, &default_endpoint_params);
   EXPECT_NE(nullptr, client_endpoint);
 
   // First disco in conn
@@ -798,7 +816,7 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_removal_in_cb)
   tctx.disco_in_conn = false;
   tctx.disco_in_len = true;
 
-  client_endpoint = sukat_sock_endpoint_add(client, &default_params);
+  client_endpoint = sukat_sock_endpoint_add(client, &default_endpoint_params);
   EXPECT_NE(nullptr, client_endpoint);
   err = sukat_sock_read(server, 0);
   EXPECT_EQ(0, err);
@@ -818,7 +836,7 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_removal_in_cb)
   tctx.disco_in_len = false;
   tctx.disco_in_msg = true;
 
-  client_endpoint = sukat_sock_endpoint_add(client, &default_params);
+  client_endpoint = sukat_sock_endpoint_add(client, &default_endpoint_params);
   EXPECT_NE(nullptr, client_endpoint);
   err = sukat_sock_read(server, 0);
   EXPECT_EQ(0, err);
@@ -839,7 +857,7 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_removal_in_cb)
   // same for destroys.
   tctx.ctx = server;
 
-  client_endpoint = sukat_sock_endpoint_add(client, &default_params);
+  client_endpoint = sukat_sock_endpoint_add(client, &default_endpoint_params);
   EXPECT_NE(nullptr, client_endpoint);
 
   tctx.destroy_in_conn = tctx.disco_in_conn = true;
@@ -852,16 +870,16 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_removal_in_cb)
   // Destroy in conn_cb
   get_random_socket();
   tctx.destroy_in_conn = tctx.disco_in_conn = false;
-  default_params.server = true;
+  default_endpoint_params.server = true;
   server = sukat_sock_create(&default_params, &default_cbs);
   ASSERT_NE(nullptr, server);
-  server_endpoint = sukat_sock_endpoint_add(server, &default_params);
+  server_endpoint = sukat_sock_endpoint_add(server, &default_endpoint_params);
   EXPECT_NE(nullptr, server_endpoint);
 
   tctx.ctx = server;
   tctx.destroy_this_too = server_endpoint;
-  default_params.server = false;
-  client_endpoint = sukat_sock_endpoint_add(client, &default_params);
+  default_endpoint_params.server = false;
+  client_endpoint = sukat_sock_endpoint_add(client, &default_endpoint_params);
   EXPECT_NE(nullptr, client_endpoint);
 
   // Destroy in len_cb
@@ -876,17 +894,17 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_removal_in_cb)
   tctx.disco_in_len = tctx.destroy_in_len = false;
 
   get_random_socket();
-  default_params.server = true;
+  default_endpoint_params.server = true;
   server = sukat_sock_create(&default_params, &default_cbs);
   ASSERT_NE(nullptr, server);
-  server_endpoint = sukat_sock_endpoint_add(server, &default_params);
+  server_endpoint = sukat_sock_endpoint_add(server, &default_endpoint_params);
   EXPECT_NE(nullptr, server_endpoint);
 
   // Destroy in msg_cb.
   tctx.ctx = server;
   tctx.destroy_this_too = server_endpoint;
-  default_params.server = false;
-  client_endpoint = sukat_sock_endpoint_add(client, &default_params);
+  default_endpoint_params.server = false;
+  client_endpoint = sukat_sock_endpoint_add(client, &default_endpoint_params);
   EXPECT_NE(nullptr, client_endpoint);
 
   tctx.disco_in_msg = tctx.destroy_in_msg = true;
@@ -919,12 +937,13 @@ protected:
   virtual void SetUp() {
       memset(&default_cbs, 0, sizeof(default_cbs));
       memset(&default_params, 0, sizeof(default_params));
+      memset(&default_endpoint_params, 0, sizeof(default_endpoint_params));
 
       default_cbs.log_cb = test_log_cb;
 
-      default_params.pinet.ip = local_ipv4;
-      default_params.domain = AF_UNSPEC;
-      default_params.type = SOCK_STREAM;
+      default_endpoint_params.pinet.ip = local_ipv4;
+      default_endpoint_params.domain = AF_UNSPEC;
+      default_endpoint_params.type = SOCK_STREAM;
   }
 
   virtual void TearDown() {
@@ -935,6 +954,7 @@ protected:
   // Objects declared here can be used by all tests
   struct sukat_sock_cbs default_cbs;
   struct sukat_sock_params default_params;
+  struct sukat_sock_endpoint_params default_endpoint_params;
   const char *local_ipv4 = "127.0.0.1", *local_ipv6 = "::1";
 };
 
@@ -967,14 +987,14 @@ TEST_F(sukat_sock_test_inet, sukat_sock_test_basic_client_server)
 
   memset(buf, 0, sizeof(buf));
 
-  default_params.server = true;
+  default_endpoint_params.server = true;
   default_params.caller_ctx = &tctx;
   default_cbs.conn_cb = inet_conn_cb;
   default_cbs.msg_cb = msg_cb;
   default_cbs.msg_len_cb = len_cb;
   ctx = sukat_sock_create(&default_params, &default_cbs);
   ASSERT_NE(nullptr, ctx);
-  server_endpoint = sukat_sock_endpoint_add(ctx, &default_params);
+  server_endpoint = sukat_sock_endpoint_add(ctx, &default_endpoint_params);
   EXPECT_NE(nullptr, server_endpoint);
   EXPECT_EQ(AF_INET, get_domain(server_endpoint));
   EXPECT_EQ(SOCK_STREAM, server_endpoint->info.type);
@@ -982,12 +1002,13 @@ TEST_F(sukat_sock_test_inet, sukat_sock_test_basic_client_server)
   EXPECT_NE(0, sukat_sock_get_port(server_endpoint));
   snprintf(portbuf, sizeof(portbuf), "%hu",
            sukat_sock_get_port(server_endpoint));
-  default_params.server = false;
-  default_params.pinet.port = portbuf;
+  default_endpoint_params.server = false;
+  default_endpoint_params.pinet.port = portbuf;
 
   client_ctx = sukat_sock_create(&default_params, &default_cbs);
   ASSERT_NE(nullptr, client_ctx);
-  client_endpoint = sukat_sock_endpoint_add(client_ctx, &default_params);
+  client_endpoint =
+    sukat_sock_endpoint_add(client_ctx, &default_endpoint_params);
   EXPECT_NE(nullptr, client_endpoint);
   EXPECT_EQ(AF_INET, get_domain(client_endpoint));
   EXPECT_EQ(SOCK_STREAM, client_endpoint->info.type);
@@ -1044,25 +1065,25 @@ TEST_F(sukat_sock_test_inet, sukat_sock_test_ipv6)
   char portbuf[strlen("65535") + 1];
   int err;
 
-  default_params.server = true;
-  default_params.pinet.ip = local_ipv6;
-  default_params.type = SOCK_DGRAM;
+  default_endpoint_params.server = true;
+  default_endpoint_params.pinet.ip = local_ipv6;
+  default_endpoint_params.type = SOCK_DGRAM;
 
   server = sukat_sock_create(&default_params, &default_cbs);
   ASSERT_NE(nullptr, server);
-  server_endpoint = sukat_sock_endpoint_add(server, &default_params);
+  server_endpoint = sukat_sock_endpoint_add(server, &default_endpoint_params);
   EXPECT_EQ(AF_INET6, get_domain(server_endpoint));
   EXPECT_EQ(SOCK_DGRAM, server_endpoint->info.type);
 
   EXPECT_NE(0, server_endpoint->info.sin.sin_port);
   snprintf(portbuf, sizeof(portbuf), "%hu",
            ntohs(server_endpoint->info.sin6.sin6_port));
-  default_params.server = false;
-  default_params.pinet.port = portbuf;
+  default_endpoint_params.server = false;
+  default_endpoint_params.pinet.port = portbuf;
 
   client = sukat_sock_create(&default_params, &default_cbs);
   ASSERT_NE(nullptr, client);
-  client_endpoint = sukat_sock_endpoint_add(client, &default_params);
+  client_endpoint = sukat_sock_endpoint_add(client, &default_endpoint_params);
   EXPECT_EQ(AF_INET6, get_domain(client_endpoint));
   EXPECT_EQ(SOCK_DGRAM, client_endpoint->info.type);
 
