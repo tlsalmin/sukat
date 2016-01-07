@@ -106,6 +106,12 @@ struct bgp_hdr
   uint8_t type;
 };
 
+struct bgp_withdrawn_route
+{
+  uint8_t length;
+  uint8_t prefix[];
+};
+
 struct bgp_open
 {
   uint8_t version;
@@ -116,12 +122,20 @@ struct bgp_open
   uint8_t opt_param[];
 };
 
+struct bgp_notification
+{
+  uint8_t error;
+  uint8_t error_subcode;
+  uint8_t data[];
+};
+
 struct bgp_msg
 {
   struct bgp_hdr hdr;
   union
     {
       struct bgp_open open;
+      struct bgp_notification notification;
     } msg;
 };
 #pragma pack()
@@ -179,6 +193,18 @@ static bool msg_is_sane(sukat_bgp_t *bgp_ctx, uint8_t *buf, size_t buf_len)
                       return true;
                     }
                   ERR(bgp_ctx, "Invalid keepalive length %hu", msg_len);
+                case BGP_MSG_NOTIFICATION:
+                  if (msg_len >=
+                      sizeof(msg->hdr) + sizeof(msg->msg.notification))
+                    {
+                      return true;
+                    }
+                  else
+                    {
+                      ERR(bgp_ctx, "Too short (%hu) message for notification",
+                          msg_len);
+                    }
+                  break;
                 default:
                   ERR(bgp_ctx, "Unknown message type %u", msg->hdr.type);
                   break;
@@ -226,6 +252,7 @@ static void bgp_msg_cb(void *ctx,
   struct bgp_msg *msg = (struct bgp_msg *)buf;
   sukat_bgp_peer_t *bgp_peer = (sukat_bgp_peer_t *)ctx;
   sukat_bgp_t *bgp_ctx;
+  size_t msg_len;
   void *caller_ctx;
 
   assert(bgp_peer != NULL);
@@ -234,12 +261,13 @@ static void bgp_msg_cb(void *ctx,
   caller_ctx =
     (bgp_peer->caller_ctx) ? bgp_peer->caller_ctx : bgp_ctx->caller_ctx;
 
-  DBG_PEER(bgp_ctx, bgp_peer, "Received %u byte %s message", buf_len,
-           msg_type_to_str((enum bgp_msg_type)msg->hdr.type));
   if (!msg_is_sane(bgp_ctx, buf, buf_len))
     {
       return;
     }
+  msg_len = ntohs(msg->hdr.length);
+  DBG_PEER(bgp_ctx, bgp_peer, "Received %u byte %s message", msg_len,
+           msg_type_to_str((enum bgp_msg_type)msg->hdr.type));
 
   switch (msg->hdr.type)
     {
@@ -287,8 +315,29 @@ static void bgp_msg_cb(void *ctx,
           bgp_ctx->cbs.keepalive_cb(caller_ctx, bgp_peer, &bgp_peer->id);
         }
       break;
+    case BGP_MSG_NOTIFICATION:
+      if (bgp_ctx->cbs.notification_cb)
+        {
+          size_t data_len =
+            msg_len - (sizeof(msg->hdr) + sizeof(msg->msg.notification));
+          uint8_t *data = (data_len) ? msg->msg.notification.data : NULL;
+
+          bgp_ctx->cbs.notification_cb(caller_ctx, bgp_peer,
+                                       msg->msg.notification.error,
+                                       msg->msg.notification.error_subcode,
+                                       data, data_len);
+        }
+      else
+        {
+          ERR_PEER(bgp_ctx, bgp_peer, "Received notification with code %hu "
+                   "subcode %hu but no notification_cb registered",
+                   msg->msg.notification.error,
+                   msg->msg.notification.error_subcode);
+        }
+      break;
     default:
-      ERR(bgp_ctx, "Unknown message type %u received", msg->hdr.type);
+      ERR_PEER(bgp_ctx, bgp_peer, "Unknown message type %u received",
+               msg->hdr.type);
       break;
     }
 }
@@ -544,6 +593,31 @@ sukat_bgp_peer_t *sukat_bgp_peer_add(sukat_bgp_t *ctx,
     }
   return NULL;
 };
+
+static size_t bgp_notification_length(size_t data_len)
+{
+  struct bgp_msg *msg;
+  return sizeof(msg->hdr) + sizeof(msg->msg.notification) + data_len;
+}
+
+enum sukat_sock_send_return sukat_bgp_send_notification(sukat_bgp_t *bgp_ctx,
+                                                        sukat_bgp_peer_t *peer,
+                                                        uint8_t error_code,
+                                                        uint8_t error_subcode,
+                                                        uint8_t *data,
+                                                        size_t data_len)
+{
+  size_t msg_len = bgp_notification_length(data_len);
+  uint8_t buf[msg_len];
+  struct bgp_msg *msg = (struct bgp_msg *)buf;
+
+  msg_header_fill(msg, BGP_MSG_NOTIFICATION, msg_len);
+  msg->msg.notification.error = error_code;
+  msg->msg.notification.error_subcode = error_subcode;
+  memcpy(msg->msg.notification.data, data, data_len);
+
+  return sukat_send_msg(bgp_ctx->sock_ctx, peer->sock_peer, buf, msg_len);
+}
 
 void sukat_bgp_destroy(sukat_bgp_t *ctx)
 {

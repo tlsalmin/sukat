@@ -66,6 +66,21 @@ typedef void (*sukat_bgp_keepalive_cb)(void *ctx, sukat_bgp_peer_t *peer,
                                       bgp_id_t *id);
 
 /*!
+ * @brief Callback invoked when a notification is received from a peer.
+ *
+ * @param ctx           Caller ctx.
+ * @param peer          Peer identifier.
+ * @param error_code    Error code received.
+ * @param error_subcode Error subcode received.
+ * @param data          Variable length data received.
+ * @param data_len      Length of data.
+ */
+typedef void (*sukat_bgp_notification_cb)(void *ctx, sukat_bgp_peer_t *peer,
+                                          uint8_t error_code,
+                                          uint8_t error_subcode,
+                                          uint8_t *data, size_t data_len);
+
+/*!
  * Parameters for a BGP context.
  */
 struct sukat_bgp_params
@@ -88,6 +103,8 @@ struct sukat_bgp_cbs
 {
   sukat_bgp_open_cb open_cb; //!< Callback invoked when OPEN is received.
   sukat_bgp_keepalive_cb keepalive_cb;
+  sukat_bgp_notification_cb notification_cb; /*!< Invoked when NOTIFICATION
+                                                  received. */
   sukat_log_cb log_cb;
 };
 
@@ -109,6 +126,25 @@ sukat_bgp_t *sukat_bgp_create(struct sukat_bgp_params *params,
  * @param ctx   BGP context.
  */
 void sukat_bgp_destroy(sukat_bgp_t *ctx);
+
+/*!
+ * @brief Send a notification to a peer
+ *
+ * @param bgp_ctx       BGP context.
+ * @param peer          Peer to send notification to.
+ * @param error_code    Error code.
+ * @param error_subcode Error subcode.
+ * @param data          Variable length data.
+ * @param data_len      Length of data.
+ *
+ * @return ::sukat_sock_send_return
+ */
+enum sukat_sock_send_return sukat_bgp_send_notification(sukat_bgp_t *bgp_ctx,
+                                                        sukat_bgp_peer_t *peer,
+                                                        uint8_t error_code,
+                                                        uint8_t error_subcode,
+                                                        uint8_t *data,
+                                                        size_t data_len);
 
 /*!
  * @briefs Connects to \p peer
