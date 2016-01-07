@@ -21,6 +21,26 @@
 
 #define BGP_VERSION 4
 
+#define LOG_W_PEER(_ctx, _peer, _lvl, _fmt, ...)                              \
+  do                                                                          \
+    {                                                                         \
+      char peerbuf[64];                                                       \
+                                                                              \
+      snprintf(peerbuf, sizeof(peerbuf), "peer AS: %hu BGP_ID: %u",           \
+               _peer->id.as_num, _peer->id.bgp_id);                           \
+      _lvl(_ctx, "%s: " _fmt, peerbuf, ##__VA_ARGS__);                        \
+    }                                                                         \
+  while (0)
+
+#define DBG_PEER(_ctx, _peer, _fmt, ...)                                      \
+  LOG_W_PEER(_ctx, _peer, DBG, _fmt,## __VA_ARGS__)
+
+#define LOG_PEER(_ctx, _peer, _fmt, ...)                                      \
+  LOG_W_PEER(_ctx, _peer, LOG, _fmt,## __VA_ARGS__)
+
+#define ERR_PEER(_ctx, _peer, _fmt, ...)                                      \
+  LOG_W_PEER(_ctx, _peer, ERR, _fmt,## __VA_ARGS__)
+
 struct sukat_bgp_ctx_t
 {
   struct sukat_bgp_cbs cbs;
@@ -41,9 +61,10 @@ struct sukat_bgp_peer_ctx
   sukat_sock_endpoint_t *sock_peer;
   struct {
       uint8_t opened:1; //!< True if we have received a BGP_MSG_OPEN.
-      uint8_t destroyed:1;
+      uint8_t destroyed:1; //!< Explicitly destroyed by library user.
       uint8_t accepted_from_server_socket:1;
-      uint8_t unused:6;
+      uint8_t open_confirmed:1; //!< Open confirmed by KEEPALIVE
+      uint8_t unused:4;
   } flags;
   bgp_id_t id;
   sukat_bgp_t *main_ctx;
@@ -118,9 +139,10 @@ static int bgp_msg_len_cb(void *ctx, uint8_t *buf, size_t buf_len)
   return ntohs(msg->hdr.length);
 }
 
-static bool msg_is_sane(uint8_t *buf, size_t buf_len)
+static bool msg_is_sane(sukat_bgp_t *bgp_ctx, uint8_t *buf, size_t buf_len)
 {
   struct bgp_msg *msg = (struct bgp_msg *)buf;
+  uint16_t exam16;
 
   if (buf_len >= sizeof(msg->hdr))
     {
@@ -134,18 +156,67 @@ static bool msg_is_sane(uint8_t *buf, size_t buf_len)
               switch (msg->hdr.type)
                 {
                 case BGP_MSG_OPEN:
-                  return (buf_len == sizeof(msg->hdr) + sizeof(msg->msg.open) +
-                          msg->msg.open.opt_param_len);
+                  exam16 = sizeof(msg->hdr) + sizeof(msg->msg.open) +
+                    msg->msg.open.opt_param_len;
+                  if (msg_len == exam16)
+                    {
+                      exam16 = ntohs(msg->msg.open.hold_time);
+                      if (exam16 == 0 || exam16 >= 3)
+                        {
+                          return true;
+                        }
+                      ERR(bgp_ctx, "Invalid hold time %u", exam16);
+                    }
+                  else
+                    {
+                      ERR(bgp_ctx, "Message length %u doesn't match calculated "
+                          "length %u", msg_len, exam16);
+                    }
                   break;
                 case BGP_MSG_KEEPALIVE:
-                  return (buf_len == 19);
+                  if (buf_len == 19)
+                    {
+                      return true;
+                    }
+                  ERR(bgp_ctx, "Invalid keepalive length %hu", msg_len);
                 default:
+                  ERR(bgp_ctx, "Unknown message type %u", msg->hdr.type);
                   break;
                 }
             }
+          else
+            {
+              ERR(bgp_ctx, "Invalid message length %u", msg_len);
+            }
         }
     }
+  else
+    {
+      ERR(bgp_ctx, "Message length %u not long enough for header", buf_len);
+    }
   return false;
+}
+
+static void msg_header_fill(struct bgp_msg *msg, enum bgp_msg_type type,
+                            size_t len)
+{
+  msg->hdr.length = htons(len);
+  msg->hdr.type = type;
+  memset(msg->hdr.marker, 1, sizeof(msg->hdr.marker));
+}
+
+static enum sukat_sock_send_return msg_send_keepalive(sukat_bgp_t *bgp_ctx,
+                                                      sukat_bgp_peer_t *peer)
+{
+  struct bgp_msg msg = { };
+  size_t msg_len = sizeof(msg.hdr);
+
+  assert(bgp_ctx != NULL && peer != NULL);
+  msg_header_fill(&msg, BGP_MSG_KEEPALIVE, msg_len);
+  DBG_PEER(bgp_ctx, peer, "Sending KEEPALIVE");
+
+  return sukat_send_msg(bgp_ctx->sock_ctx, peer->sock_peer, (uint8_t *)&msg,
+                        msg_len);
 }
 
 static void bgp_msg_cb(void *ctx,
@@ -163,14 +234,12 @@ static void bgp_msg_cb(void *ctx,
   caller_ctx =
     (bgp_peer->caller_ctx) ? bgp_peer->caller_ctx : bgp_ctx->caller_ctx;
 
-  if (!msg_is_sane(buf, buf_len))
+  DBG_PEER(bgp_ctx, bgp_peer, "Received %u byte %s message", buf_len,
+           msg_type_to_str((enum bgp_msg_type)msg->hdr.type));
+  if (!msg_is_sane(bgp_ctx, buf, buf_len))
     {
-      ERR(bgp_ctx, "Message type %s length %u wasn't sane",
-          msg_type_to_str((enum bgp_msg_type)msg->hdr.type), buf_len);
       return;
     }
-  DBG(bgp_ctx, "Received %u byte %s message", buf_len,
-      msg_type_to_str((enum bgp_msg_type)msg->hdr.type));
 
   switch (msg->hdr.type)
     {
@@ -179,8 +248,8 @@ static void bgp_msg_cb(void *ctx,
       msg->msg.open.bgp_id = ntohl(msg->msg.open.bgp_id);
       if (bgp_peer->flags.opened)
         {
-          ERR(bgp_ctx, "%s sent duplicate open message",
-              (bgp_peer) ?  "Client" : "Server");
+          ERR_PEER(bgp_ctx, bgp_peer, "Received open after an already "
+                   "succesfull previous open");
         }
       bgp_peer->flags.opened = true;
       bgp_peer->id.as_num = msg->msg.open.as_num;
@@ -198,10 +267,25 @@ static void bgp_msg_cb(void *ctx,
             {
               bgp_peer->caller_ctx = new_caller_ctx;
             }
+          // RFC says to reply to the open with a KEEPALIVE
+          if (!destro_is_deleted(bgp_ctx->destro_ctx,
+                                 &bgp_peer->destro_client_ctx))
+            {
+              if (msg_send_keepalive(bgp_ctx, bgp_peer) != SUKAT_SEND_OK)
+                {
+                  ERR_PEER(bgp_ctx, bgp_peer,
+                           "Failed to send KEEPALIVE after open");
+                  destro_delete(bgp_ctx->destro_ctx,
+                                &bgp_peer->destro_client_ctx);
+                }
+            }
         }
       break;
     case BGP_MSG_KEEPALIVE:
-
+      if (bgp_ctx->cbs.keepalive_cb)
+        {
+          bgp_ctx->cbs.keepalive_cb(caller_ctx, bgp_peer, &bgp_peer->id);
+        }
       break;
     default:
       ERR(bgp_ctx, "Unknown message type %u received", msg->hdr.type);
@@ -225,9 +309,9 @@ static bool msg_send_open(sukat_bgp_t *ctx, sukat_bgp_peer_t *peer)
   assert(ctx != NULL && peer != NULL);
 
   // Fill header.
-  memset(&msg->hdr.marker, 1, sizeof(msg->hdr.marker));
-  msg->hdr.length = htons(msg_len);
+  msg_header_fill(msg, BGP_MSG_OPEN, msg_len);
   msg->hdr.type = BGP_MSG_OPEN;
+
   memset(&msg->msg.open, 0, sizeof(msg->msg.open));
 
   // Fill message.
@@ -303,7 +387,7 @@ static void *bgp_conn_cb(void *caller_ctx, sukat_sock_endpoint_t *sock_peer,
     }
   if (msg_send_open(ctx, bgp_peer) == true)
     {
-      DBG(ctx, "Sent open to new client");
+      DBG(ctx, "Sent open to new peer");
       return retval;
     }
   sukat_sock_disconnect(ctx->sock_ctx, sock_peer);
@@ -317,8 +401,15 @@ void bgp_destro_close(void *main_ctx, void *client_ctx)
   if (client_ctx)
     {
       sukat_bgp_peer_t *bgp_peer = (sukat_bgp_peer_t *)client_ctx;
+      void *caller_ctx = (bgp_peer->caller_ctx) ? bgp_peer->caller_ctx :
+        ctx->caller_ctx;
 
       sukat_sock_disconnect(ctx->sock_ctx, bgp_peer->sock_peer);
+      if (!bgp_peer->flags.destroyed && ctx->cbs.open_cb)
+        {
+          ctx->cbs.open_cb(caller_ctx, bgp_peer, &bgp_peer->id,
+                           SUKAT_SOCK_CONN_EVENT_DISCONNECT);
+        }
     }
   else
     {

@@ -43,7 +43,9 @@ struct bgp_test_ctx
       uint8_t open_should_visit:1;
       uint8_t open_visited:1;
       uint8_t disconnect_should:1;
-      uint8_t unused:5;
+      uint8_t keepalive_should:1;
+      uint8_t keepalive_visited:1;
+      uint8_t unused:3;
   };
   sukat_bgp_peer_t *newest_client;
   uint8_t match_version;
@@ -74,6 +76,22 @@ void *open_cb(void *ctx, sukat_bgp_peer_t *client, bgp_id_t *id,
   return NULL;
 }
 
+void keepalive_cb(void *ctx, __attribute__((unused)) sukat_bgp_peer_t *peer,
+                  bgp_id_t *id)
+{
+  struct bgp_test_ctx *tctx = (struct bgp_test_ctx *)ctx;
+
+  EXPECT_NE(nullptr, tctx);
+  if (tctx)
+    {
+      EXPECT_EQ(true, tctx->keepalive_should);
+      tctx->keepalive_visited = true;
+      EXPECT_EQ(tctx->match_version, id->version);
+      EXPECT_EQ(tctx->match_as_num, id->as_num);
+      EXPECT_EQ(tctx->match_bgp_id, id->bgp_id);
+    }
+}
+
 TEST_F(sukat_bgp_test, sukat_bgp_test_init)
 {
   sukat_bgp_t *server, *client;
@@ -94,6 +112,7 @@ TEST_F(sukat_bgp_test, sukat_bgp_test_init)
   default_params.caller_ctx = (void *)&tctx;
   default_params.pinet.port = portbuf;
   default_cbs.open_cb = open_cb;
+  default_cbs.keepalive_cb = keepalive_cb;
 
   snprintf(portbuf, sizeof(portbuf), "0");
 
@@ -129,12 +148,22 @@ TEST_F(sukat_bgp_test, sukat_bgp_test_init)
 
   tctx.match_as_num = client_as;
   tctx.match_bgp_id = client_bgp;
+  // Should also receive a keepalive here.
+  tctx.keepalive_should = true;
   err = sukat_bgp_read(server, 100);
   EXPECT_EQ(0, err);
   EXPECT_EQ(true, tctx.open_visited);
-  tctx.open_visited = false;
+  EXPECT_EQ(true, tctx.keepalive_visited);
+  tctx.open_visited = tctx.keepalive_visited = tctx.open_should_visit =false;
   client_from_server = tctx.newest_client;
   EXPECT_NE(nullptr, client_from_server);
+
+  // Read keepalive on client.
+  tctx.match_as_num = server_as;
+  tctx.match_bgp_id = server_bgp;
+  err = sukat_bgp_read(client, 100);
+  EXPECT_EQ(0, err);
+  EXPECT_EQ(true, tctx.keepalive_visited);
 
   sukat_bgp_disconnect(server, client_from_server);
   sukat_bgp_disconnect(client, server_from_client);

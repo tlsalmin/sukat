@@ -56,6 +56,16 @@ typedef void *(*sukat_bgp_open_cb)(void *ctx, sukat_bgp_peer_t *peer,
                                    bgp_id_t *id, sukat_sock_event_t event);
 
 /*!
+ * @brief Callback invoked when a keepalive message was received from \p peer.
+ *
+ * @param ctx   Caller ctx.
+ * @param peer  BGP peer context.
+ * @param id    BGP peer ID.
+ */
+typedef void (*sukat_bgp_keepalive_cb)(void *ctx, sukat_bgp_peer_t *peer,
+                                      bgp_id_t *id);
+
+/*!
  * Parameters for a BGP context.
  */
 struct sukat_bgp_params
@@ -77,6 +87,7 @@ struct sukat_bgp_params
 struct sukat_bgp_cbs
 {
   sukat_bgp_open_cb open_cb; //!< Callback invoked when OPEN is received.
+  sukat_bgp_keepalive_cb keepalive_cb;
   sukat_log_cb log_cb;
 };
 
