@@ -20,6 +20,7 @@
 #include "delayed_destruction.h"
 
 #define BGP_VERSION 4
+#define BGP_MAX_LEN 4096
 
 #define LOG_W_PEER(_ctx, _peer, _lvl, _fmt, ...)                              \
   do                                                                          \
@@ -101,17 +102,33 @@ static const char *msg_type_to_str(enum bgp_msg_type type)
 /* See https://www.ietf.org/rfc/rfc4271.txt */
 struct bgp_hdr
 {
-  uint8_t marker[16];
-  uint16_t length;
-  uint8_t type;
+  uint8_t marker[16]; //!< All ones always.
+  uint16_t length; //!< Length in octets.
+  uint8_t type; //!< \ref bgp_msg_type.
 };
 
-struct bgp_withdrawn_route
+/*!
+ * The path_attr header as seen on the wire.
+ */
+struct bgp_path_attr
 {
-  uint8_t length;
-  uint8_t prefix[];
+  struct sukat_bgp_attr_flags flags;
+  uint8_t type; //!< Matches ::sukat_bgp_attr_t
 };
 
+/*!
+ * The AS_PATh path attribute as seen on the wire.
+ */
+struct bgp_as_path_network
+{
+  uint8_t type; //!< \ref sukat_bgp_as_path_type.
+  uint8_t number_of_as_numbers; //!< Number, not bytes. so bytes == 2*numbers.
+  uint16_t as_numbers[];
+};
+
+/*!
+ * The BGP open message as seen on the wire.
+ */
 struct bgp_open
 {
   uint8_t version;
@@ -122,6 +139,9 @@ struct bgp_open
   uint8_t opt_param[];
 };
 
+/*!
+ * The BGP Notification message as seen on the wire
+ */
 struct bgp_notification
 {
   uint8_t error;
@@ -136,6 +156,8 @@ struct bgp_msg
     {
       struct bgp_open open;
       struct bgp_notification notification;
+      uint8_t update[0]; /*!< As this has three variable length fields,
+                            it can't be easily added here as struct. */
     } msg;
 };
 #pragma pack()
@@ -153,6 +175,39 @@ static int bgp_msg_len_cb(void *ctx, uint8_t *buf, size_t buf_len)
   return ntohs(msg->hdr.length);
 }
 
+static size_t bgp_msg_static_len(enum sukat_bgp_attr_type type,
+                                 size_t n_entries)
+{
+  size_t ret;
+
+  switch (type)
+    {
+    case SUKAT_BGP_ATTR_ORIGIN:
+      ret = 1;
+      break;
+    case SUKAT_BGP_ATTR_AS_PATH:
+      ret = sizeof(*(struct bgp_as_path_network *)NULL) + n_entries *
+        sizeof(*((struct bgp_as_path_network *)NULL)->as_numbers);
+      break;
+    case SUKAT_BGP_ATTR_NEXT_HOP:
+    case SUKAT_BGP_ATTR_MULTI_EXIT_DISC:
+    case SUKAT_BGP_ATTR_LOCAL_PREF:
+      ret = sizeof(uint32_t);
+      break;
+    case SUKAT_BGP_ATTR_ATOMIC_AGGREGATE:
+      ret = 0;
+      break;
+    case SUKAT_BGP_ATTR_AGGREGATOR:
+      ret = sizeof(*(struct sukat_bgp_aggregator *)NULL);
+      break;
+    default:
+      ret = 0;
+      break;
+    }
+
+  return ret;
+}
+
 static bool msg_is_sane(sukat_bgp_t *bgp_ctx, uint8_t *buf, size_t buf_len)
 {
   struct bgp_msg *msg = (struct bgp_msg *)buf;
@@ -165,7 +220,7 @@ static bool msg_is_sane(sukat_bgp_t *bgp_ctx, uint8_t *buf, size_t buf_len)
       if (msg_len == buf_len)
         {
           // RFC 4271 mandates these values.
-          if (msg_len >= 19 && msg_len <= 4096)
+          if (msg_len >= sizeof(msg->hdr) && msg_len <= BGP_MAX_LEN)
             {
               switch (msg->hdr.type)
                 {
@@ -188,7 +243,7 @@ static bool msg_is_sane(sukat_bgp_t *bgp_ctx, uint8_t *buf, size_t buf_len)
                     }
                   break;
                 case BGP_MSG_KEEPALIVE:
-                  if (buf_len == 19)
+                  if (msg_len == 19)
                     {
                       return true;
                     }
@@ -202,6 +257,17 @@ static bool msg_is_sane(sukat_bgp_t *bgp_ctx, uint8_t *buf, size_t buf_len)
                   else
                     {
                       ERR(bgp_ctx, "Too short (%hu) message for notification",
+                          msg_len);
+                    }
+                  break;
+                case BGP_MSG_UPDATE:
+                  if (msg_len >= sizeof(msg->hdr) + 4)
+                    {
+                      return true;
+                    }
+                  else
+                    {
+                      ERR(bgp_ctx, "Too short (%hu) message for update",
                           msg_len);
                     }
                   break;
@@ -245,6 +311,213 @@ static enum sukat_sock_send_return msg_send_keepalive(sukat_bgp_t *bgp_ctx,
                         msg_len);
 }
 
+static int bgp_attr_get_extra_length_and_check(struct bgp_path_attr *head,
+                                               uint8_t *payload,
+                                               size_t left_in_payload)
+{
+  size_t static_length =
+    bgp_msg_static_len((enum sukat_bgp_attr_type)head->type, 0);
+
+  if (left_in_payload >= static_length)
+    {
+      if (head->type == SUKAT_BGP_ATTR_AS_PATH)
+        {
+          struct bgp_as_path_network *as_path =
+            (struct bgp_as_path_network *)payload;
+
+          static_length =
+            bgp_msg_static_len((enum sukat_bgp_attr_type)head->type,
+                               as_path->number_of_as_numbers);
+          if (static_length > left_in_payload)
+            {
+              return -1;
+            }
+        }
+      // Success.
+      return (int)static_length;
+    }
+  return -1;
+}
+
+/*!
+ * @brief Formats the path attributes to easies host byte order struct.
+ *
+ * @param bgp_ctx       BGP context, for error messages
+ * @param data          Pointer to start of path attributes.
+ * @param data_len      Length of path attributes
+ *
+ * @return != NULL      List of path attributes.
+ * @return NULL         Failure.
+ */
+static struct sukat_bgp_path_attr *
+  msg_update_process_attrs(sukat_bgp_t *bgp_ctx, uint8_t *data, size_t data_len)
+{
+  struct sukat_bgp_path_attr *attr_root = NULL, *attr_tail = NULL;
+  uint8_t *ptr = data;
+#define N_LEFT (data_len - (ptr - data))
+
+  assert(bgp_ctx != NULL && data != NULL && data_len > 0);
+  while (N_LEFT > 0)
+    {
+      struct bgp_path_attr *attr_head = (struct bgp_path_attr *)ptr;
+      struct sukat_bgp_path_attr *new_attr = NULL;
+      int extra_increment;
+      struct sukat_bgp_as_path *path;
+      size_t i;
+      union
+        {
+          uint8_t *ptr;
+          struct bgp_as_path_network *path;
+          struct sukat_bgp_aggregator *aggregator;
+          uint32_t *val32;
+        } payload;
+
+      if (N_LEFT < sizeof(*attr_head))
+        {
+          ERR(bgp_ctx, "Only %u bytes left when needing %u bytes for type and "
+              "flags", N_LEFT, sizeof(*attr_head));
+          goto fail;
+        }
+      ptr += sizeof(*attr_head);
+
+      extra_increment = bgp_attr_get_extra_length_and_check(attr_head,
+                                                            ptr,
+                                                            N_LEFT);
+      if (extra_increment < 0)
+        {
+          ERR(bgp_ctx, "Not enough data for left (%u) in message for type %hhu",
+              N_LEFT, attr_head->type);
+          goto fail;
+        }
+      new_attr = (struct sukat_bgp_path_attr *)calloc(1, sizeof(*new_attr) +
+                                                      extra_increment);
+      if (!new_attr)
+        {
+          ERR(bgp_ctx, "Couldn't allocate memory for new path attribute: %s",
+              strerror(errno));
+          goto fail;
+        }
+
+      // Copy and typecast values common to all
+      new_attr->flags = attr_head->flags;
+      new_attr->attr_type = (sukat_bgp_attr_t)attr_head->type;
+      payload.ptr = ptr;
+      ptr += extra_increment;
+
+      switch (attr_head->type)
+        {
+        case SUKAT_BGP_ATTR_ORIGIN:
+          new_attr->value.origin = *payload.ptr;
+          break;
+        case SUKAT_BGP_ATTR_AS_PATH:
+          path = &new_attr->value.as_path;
+
+          path->type = (enum sukat_bgp_as_path_type)payload.path->type;
+          path->number_of_as_numbers = payload.path->number_of_as_numbers;
+          for (i = 0; i < path->number_of_as_numbers; i++)
+            {
+              path->as_numbers[i] = ntohs(payload.path->as_numbers[i]);
+            }
+          break;
+        case SUKAT_BGP_ATTR_NEXT_HOP:
+        case SUKAT_BGP_ATTR_MULTI_EXIT_DISC:
+        case SUKAT_BGP_ATTR_LOCAL_PREF:
+          new_attr->value.next_hop = ntohl(*payload.val32);
+          break;
+        case SUKAT_BGP_ATTR_AGGREGATOR:
+          new_attr->value.aggregator.as_number =
+            ntohs(payload.aggregator->as_number);
+          new_attr->value.aggregator.ip = ntohs(payload.aggregator->ip);
+          break;
+        case SUKAT_BGP_ATTR_ATOMIC_AGGREGATE:
+          // Length 0 attribute.
+          break;
+        default:
+          ERR(bgp_ctx, "Unknown type %hhu", attr_head->type);
+          goto fail;
+          break;
+        }
+
+      // Add to list of attrs.
+      if (!attr_root)
+        {
+          assert(!attr_tail);
+          attr_root = attr_tail = new_attr;
+        }
+      else
+        {
+          assert(attr_tail != NULL);
+          attr_tail->next = new_attr;
+          attr_tail = new_attr;
+        }
+    }
+
+  return attr_root;
+
+fail:
+  sukat_bgp_free_attr_list(attr_root);
+  return NULL;
+#undef N_LEFT
+}
+
+static bool msg_update_process(sukat_bgp_t *bgp_ctx, struct bgp_msg *msg,
+                               struct sukat_bgp_update *update)
+{
+  uint16_t val16;
+  uint8_t *ptr;
+  // Length left for variable length values.
+#define MSG_LEFT (msg->hdr.length - (ptr - (uint8_t *)msg))
+
+  assert(bgp_ctx != NULL && msg != NULL && update != NULL);
+
+  ptr = msg->msg.update;
+  val16 = ntohs(*(uint16_t *)ptr);
+  ptr += sizeof(uint16_t);
+  if (val16 > 0)
+    {
+      DBG(bgp_ctx, "Update message has %hu bytes of withdrawn data",
+          val16);
+      if (MSG_LEFT < val16)
+        {
+          ERR(bgp_ctx, "Message claims to have %hu data when only %u bytes "
+              "readable", val16, MSG_LEFT);
+          goto fail;
+        }
+      update->withdrawn_length = val16;
+      update->withdrawn = (struct sukat_bgp_lp*)ptr;
+      ptr += val16;
+    }
+  val16 = ntohs(*(uint16_t *)ptr);
+  ptr += sizeof(uint16_t);
+  if (val16)
+    {
+      DBG(bgp_ctx, "Update message has %hu bytes of path attributes", val16);
+      if (MSG_LEFT < val16)
+        {
+          ERR(bgp_ctx, "Message claims to have %hu data when only %u bytes "
+              "readable", val16, MSG_LEFT);
+          goto fail;
+        }
+      update->path_attr = msg_update_process_attrs(bgp_ctx, ptr, val16);
+      if (!update->path_attr)
+        {
+          goto fail;
+        }
+      ptr += val16;
+    }
+  if (MSG_LEFT)
+    {
+      DBG(bgp_ctx, "Update message has %u bytes of reachability", MSG_LEFT);
+      update->reachability_length = MSG_LEFT;
+      update->reachability = (struct sukat_bgp_lp *)ptr;
+    }
+
+  return true;
+fail:
+  sukat_bgp_free_attr_list(update->path_attr);
+  return false;
+}
+
 static void bgp_msg_cb(void *ctx,
                        __attribute__((unused)) sukat_sock_endpoint_t *client,
                        uint8_t *buf, size_t buf_len)
@@ -252,7 +525,7 @@ static void bgp_msg_cb(void *ctx,
   struct bgp_msg *msg = (struct bgp_msg *)buf;
   sukat_bgp_peer_t *bgp_peer = (sukat_bgp_peer_t *)ctx;
   sukat_bgp_t *bgp_ctx;
-  size_t msg_len;
+  struct sukat_bgp_update update = { };
   void *caller_ctx;
 
   assert(bgp_peer != NULL);
@@ -261,12 +534,14 @@ static void bgp_msg_cb(void *ctx,
   caller_ctx =
     (bgp_peer->caller_ctx) ? bgp_peer->caller_ctx : bgp_ctx->caller_ctx;
 
+  assert(bgp_ctx != NULL);
+
   if (!msg_is_sane(bgp_ctx, buf, buf_len))
     {
       return;
     }
-  msg_len = ntohs(msg->hdr.length);
-  DBG_PEER(bgp_ctx, bgp_peer, "Received %u byte %s message", msg_len,
+  msg->hdr.length = ntohs(msg->hdr.length);
+  DBG_PEER(bgp_ctx, bgp_peer, "Received %u byte %s message", msg->hdr.length,
            msg_type_to_str((enum bgp_msg_type)msg->hdr.type));
 
   switch (msg->hdr.type)
@@ -319,7 +594,8 @@ static void bgp_msg_cb(void *ctx,
       if (bgp_ctx->cbs.notification_cb)
         {
           size_t data_len =
-            msg_len - (sizeof(msg->hdr) + sizeof(msg->msg.notification));
+            msg->hdr.length -
+            (sizeof(msg->hdr) + sizeof(msg->msg.notification));
           uint8_t *data = (data_len) ? msg->msg.notification.data : NULL;
 
           bgp_ctx->cbs.notification_cb(caller_ctx, bgp_peer,
@@ -335,6 +611,21 @@ static void bgp_msg_cb(void *ctx,
                    msg->msg.notification.error_subcode);
         }
       break;
+    case BGP_MSG_UPDATE:
+      if (msg_update_process(bgp_ctx, msg, &update) == true)
+        {
+          if (bgp_ctx->cbs.update_cb)
+            {
+              bgp_ctx->cbs.update_cb(caller_ctx, bgp_peer, &bgp_peer->id,
+                                     &update);
+            }
+          sukat_bgp_free_attr_list(update.path_attr);
+        }
+      else
+        {
+          ERR_PEER(bgp_ctx, bgp_peer, "Failed to process update");
+        }
+      break;;
     default:
       ERR_PEER(bgp_ctx, bgp_peer, "Unknown message type %u received",
                msg->hdr.type);
@@ -397,6 +688,8 @@ static void *bgp_conn_cb(void *caller_ctx, sukat_sock_endpoint_t *sock_peer,
       bgp_caller_ctx =
         (bgp_peer->caller_ctx) ? bgp_peer->caller_ctx : ctx->caller_ctx;
 
+      assert(ctx != NULL);
+
       // TODO use some bgp_peer_stringify here.
       LOG(ctx, "BGP client disconnected");
       if (ctx->cbs.open_cb)
@@ -412,6 +705,7 @@ static void *bgp_conn_cb(void *caller_ctx, sukat_sock_endpoint_t *sock_peer,
       char peer_buf[INET6_ADDRSTRLEN];
       ctx = (sukat_bgp_t *)caller_ctx;
 
+      assert(ctx != NULL);
       LOG(ctx, "New BGP %s from %s",
           (sock_peer) ? "client" : "server connection",
           sukat_sock_stringify_peer(sockaddr, sock_len, peer_buf,
@@ -433,12 +727,14 @@ static void *bgp_conn_cb(void *caller_ctx, sukat_sock_endpoint_t *sock_peer,
     {
       bgp_peer = (sukat_bgp_peer_t *)caller_ctx;
       ctx = bgp_peer->main_ctx;
+      assert(ctx != NULL && bgp_peer != NULL);
     }
   if (msg_send_open(ctx, bgp_peer) == true)
     {
       DBG(ctx, "Sent open to new peer");
       return retval;
     }
+  free(retval);
   sukat_sock_disconnect(ctx->sock_ctx, sock_peer);
   return NULL;
 }
@@ -501,7 +797,6 @@ sukat_bgp_t *sukat_bgp_create(struct sukat_bgp_params *params,
           memcpy(&ctx->cbs, cbs, sizeof(ctx->cbs));
         }
       memcpy(&ctx->id, &params->id, sizeof(ctx->id));
-      memcpy(&ctx->cbs, cbs, sizeof(ctx->cbs));
 
       sock_cbs.msg_len_cb = bgp_msg_len_cb;
       sock_cbs.msg_cb = bgp_msg_cb;
@@ -548,6 +843,12 @@ int sukat_bgp_read(sukat_bgp_t *ctx, int timeout)
 {
   int ret;
 
+  if (!ctx)
+    {
+      errno = EINVAL;
+      return -1;
+    }
+  DBG(ctx, "Checking BGP ctx %p for data", ctx);
   destro_cb_enter(ctx->destro_ctx);
   ret = sukat_sock_read(ctx->sock_ctx, timeout);
   destro_cb_exit(ctx->destro_ctx);
@@ -619,6 +920,162 @@ enum sukat_sock_send_return sukat_bgp_send_notification(sukat_bgp_t *bgp_ctx,
   return sukat_send_msg(bgp_ctx->sock_ctx, peer->sock_peer, buf, msg_len);
 }
 
+static int msg_fill_attrs(struct sukat_bgp_path_attr *attr, uint8_t *buf,
+                          size_t buf_left)
+{
+  uint8_t *ptr = buf;
+#define BUF_USED (ptr - buf)
+
+  while (attr)
+    {
+      struct bgp_path_attr *head = (struct bgp_path_attr *)ptr;
+      size_t i, next_item_len;
+      union
+        {
+          uint8_t *ptr;
+          struct bgp_as_path_network *path;
+          struct sukat_bgp_aggregator *aggregator;
+          uint32_t *val32;
+        } payload;
+
+      next_item_len = sizeof(*head) +
+        bgp_msg_static_len(attr->attr_type,
+                           (attr->attr_type == SUKAT_BGP_ATTR_AS_PATH) ?
+                           attr->value.as_path.number_of_as_numbers : 0);
+      if (BUF_USED + next_item_len > buf_left)
+        {
+          return -1;
+        }
+
+      head->flags = attr->flags;
+      head->type = (uint8_t )attr->attr_type;
+      payload.ptr = ptr + sizeof(*head);
+      switch (attr->attr_type)
+        {
+        case SUKAT_BGP_ATTR_ORIGIN:
+          *payload.ptr = attr->value.origin;
+          break;
+        case SUKAT_BGP_ATTR_AS_PATH:
+          payload.path->type = (uint8_t)attr->value.as_path.type;
+          payload.path->number_of_as_numbers =
+            attr->value.as_path.number_of_as_numbers;
+          for (i = 0; i < attr->value.as_path.number_of_as_numbers; i++)
+            {
+              payload.path->as_numbers[i] =
+                htons(attr->value.as_path.as_numbers[i]);
+            }
+          break;
+        case SUKAT_BGP_ATTR_NEXT_HOP:
+        case SUKAT_BGP_ATTR_MULTI_EXIT_DISC:
+        case SUKAT_BGP_ATTR_LOCAL_PREF:
+          *payload.val32 = htonl(attr->value.next_hop);
+        case SUKAT_BGP_ATTR_ATOMIC_AGGREGATE:
+          break;
+        case SUKAT_BGP_ATTR_AGGREGATOR:
+          payload.aggregator->ip = htonl(attr->value.aggregator.ip);
+          payload.aggregator->as_number =
+            htons(attr->value.aggregator.as_number);
+          break;
+        default:
+          abort();
+          break;
+        }
+
+      attr = attr->next;
+      ptr += next_item_len;
+    }
+
+  return BUF_USED;
+}
+
+static bool bgp_update_form(struct sukat_bgp_update *update, uint8_t *buf,
+                            size_t buf_len)
+{
+  uint8_t *ptr;
+  struct bgp_msg *msg = (struct bgp_msg *)buf;
+#define BUF_USED (ptr - buf)
+#define BUF_LEFT (buf_len - BUF_USED)
+
+  // Check minimun required
+  if (buf_len < sizeof(msg->hdr) + 2 * sizeof(uint16_t))
+    {
+      return false;
+    }
+
+  // Fill header when we know length.
+  ptr = buf + sizeof(msg->hdr);
+  *((uint16_t *)ptr) = htons(update->withdrawn_length);
+  ptr += sizeof(uint16_t);
+
+  if (update->withdrawn_length <= BUF_LEFT)
+    {
+      uint16_t *attr_length_val;
+      int used_in_attrs;
+
+      if (update->withdrawn_length > 0)
+        {
+          memcpy(ptr, update->withdrawn, update->withdrawn_length);
+        }
+      ptr += update->withdrawn_length;
+      attr_length_val = (uint16_t *)ptr;
+      ptr += sizeof(uint16_t);
+      used_in_attrs =
+        msg_fill_attrs(update->path_attr, ptr, BUF_LEFT);
+      if (used_in_attrs >= 0)
+        {
+          *attr_length_val = htons(used_in_attrs);
+          ptr += used_in_attrs;
+
+          if (BUF_LEFT >= update->reachability_length)
+            {
+              if (update->reachability_length)
+                {
+                  memcpy(ptr, update->reachability,
+                         update->reachability_length);
+                }
+              ptr += update->reachability_length;
+
+              // Fill header at last.
+              msg_header_fill(msg, BGP_MSG_UPDATE, BUF_USED);
+              return true;
+            }
+        }
+    }
+  return false;
+#undef BUF_USED
+#undef BUF_LEFT
+}
+
+enum sukat_sock_send_return
+sukat_bgp_send_update(sukat_bgp_t *bgp_ctx, sukat_bgp_peer_t *peer,
+                      struct sukat_bgp_update *update)
+{
+  if (bgp_ctx && peer && update)
+    {
+      uint8_t buf[BGP_MAX_LEN];
+
+      if (bgp_update_form(update, buf, sizeof(buf)) == true)
+        {
+          struct bgp_msg *msg = (struct bgp_msg *)buf;
+
+          LOG_PEER(bgp_ctx, peer, "Sending %u byte update message",
+                   ntohs(msg->hdr.length));
+
+          return sukat_send_msg(bgp_ctx->sock_ctx, peer->sock_peer,
+                                buf, ntohs(msg->hdr.length));
+        }
+      ERR(bgp_ctx, "Update message requested for sending too larger for BGP "
+          "maximum length (%u)", BGP_MAX_LEN);
+    }
+  else
+    {
+      ERR(bgp_ctx, "Invalid NULL argument: ctx %p, peer %p, update %p",
+          bgp_ctx, peer, update);
+    }
+
+  return SUKAT_SEND_ERROR;
+}
+
 void sukat_bgp_destroy(sukat_bgp_t *ctx)
 {
   if (ctx)
@@ -633,6 +1090,17 @@ void sukat_bgp_disconnect(sukat_bgp_t *ctx, sukat_bgp_peer_t *bgp_peer)
     {
       bgp_peer->flags.destroyed = true;
       destro_delete(ctx->destro_ctx, &bgp_peer->destro_client_ctx);
+    }
+}
+
+void sukat_bgp_free_attr_list(struct sukat_bgp_path_attr *attr_list)
+{
+  while (attr_list)
+    {
+      struct sukat_bgp_path_attr *iter = attr_list;;
+
+      attr_list = attr_list->next;
+      free(iter);
     }
 }
 

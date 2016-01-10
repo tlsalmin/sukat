@@ -11,6 +11,7 @@ extern "C"{
 #include "sukat_bgp.c"
 #include "sukat_sock.h"
 #include <stdlib.h>
+#include <stdint.h>
 }
 
 class sukat_bgp_test : public ::testing::Test
@@ -40,14 +41,17 @@ protected:
 struct bgp_test_ctx
 {
   struct {
-      uint8_t open_should_visit:1;
-      uint8_t open_visited:1;
-      uint8_t disconnect_should:1;
-      uint8_t keepalive_should:1;
-      uint8_t keepalive_visited:1;
-      uint8_t notification_should:1;
-      uint8_t notification_visited:1;
-      uint8_t unused:1;
+      uint16_t open_should_visit:1;
+      uint16_t open_visited:1;
+      uint16_t disconnect_should:1;
+      uint16_t keepalive_should:1;
+      uint16_t keepalive_visited:1;
+      uint16_t notification_should:1;
+      uint16_t notification_visited:1;
+      uint16_t update_should:1;
+
+      uint16_t update_visited:1;
+      uint16_t unused:7;
   };
   sukat_bgp_peer_t *newest_client;
   uint8_t match_version;
@@ -57,10 +61,11 @@ struct bgp_test_ctx
   uint8_t match_error_sub;
   size_t data_len;
   uint8_t *data;
+  struct sukat_bgp_update *match_update;
 };
 
-void *open_cb(void *ctx, sukat_bgp_peer_t *peer, bgp_id_t *id,
-              sukat_sock_event_t event)
+static void *open_cb(void *ctx, sukat_bgp_peer_t *peer, bgp_id_t *id,
+                     sukat_sock_event_t event)
 {
   struct bgp_test_ctx *tctx = (struct bgp_test_ctx *)ctx;
 
@@ -83,8 +88,9 @@ void *open_cb(void *ctx, sukat_bgp_peer_t *peer, bgp_id_t *id,
   return NULL;
 }
 
-void keepalive_cb(void *ctx, __attribute__((unused)) sukat_bgp_peer_t *peer,
-                  bgp_id_t *id)
+static void keepalive_cb(void *ctx,
+                         __attribute__((unused)) sukat_bgp_peer_t *peer,
+                         bgp_id_t *id)
 {
   struct bgp_test_ctx *tctx = (struct bgp_test_ctx *)ctx;
 
@@ -100,9 +106,10 @@ void keepalive_cb(void *ctx, __attribute__((unused)) sukat_bgp_peer_t *peer,
     }
 }
 
-void notification_cb(void *ctx, __attribute__((unused)) sukat_bgp_peer_t *peer,
-                     uint8_t error_code, uint8_t subcode, uint8_t *data,
-                     size_t data_len)
+static void notification_cb(void *ctx,
+                            __attribute__((unused)) sukat_bgp_peer_t *peer,
+                            uint8_t error_code, uint8_t subcode, uint8_t *data,
+                            size_t data_len)
 {
   struct bgp_test_ctx *tctx = (struct bgp_test_ctx *)ctx;
 
@@ -123,6 +130,54 @@ void notification_cb(void *ctx, __attribute__((unused)) sukat_bgp_peer_t *peer,
       tctx->notification_visited = true;
     }
 }
+
+static void update_cb(void *ctx, sukat_bgp_peer_t *peer, bgp_id_t *id,
+                      struct sukat_bgp_update *update)
+{
+  struct bgp_test_ctx *tctx = (struct bgp_test_ctx *)ctx;
+
+  EXPECT_NE(nullptr, tctx);
+  EXPECT_NE(nullptr, peer);
+  EXPECT_NE(nullptr, id);
+  if (tctx)
+    {
+      int cmpval;
+      struct sukat_bgp_path_attr *attr, *attr_match;
+
+      EXPECT_EQ(true, tctx->update_should);
+      EXPECT_NE(nullptr, update);
+      EXPECT_EQ(update->withdrawn_length, tctx->match_update->withdrawn_length);
+      EXPECT_EQ(update->reachability_length,
+                tctx->match_update->reachability_length);
+      if (update->withdrawn_length)
+        {
+          cmpval = memcmp(update->withdrawn, tctx->match_update->withdrawn,
+                          update->withdrawn_length);
+          EXPECT_EQ(0, cmpval);
+        }
+      if (update->reachability_length)
+        {
+          cmpval = memcmp(update->reachability,
+                          tctx->match_update->reachability,
+                          update->reachability_length);
+          EXPECT_EQ(0, cmpval);
+        }
+      attr = update->path_attr;
+      attr_match = tctx->match_update->path_attr;
+      while (attr)
+        {
+          EXPECT_EQ(attr->attr_type, attr_match->attr_type);
+          cmpval = memcmp(&attr->flags, &attr_match->flags, sizeof(attr->flags));
+          EXPECT_EQ(0, cmpval);
+          attr = attr->next;
+          // Matching the value: TODO: Make the func for each type length
+          // Will crash if there are different number of attrs.
+          attr_match = attr_match->next;
+        }
+      EXPECT_EQ(nullptr, attr_match);
+    }
+  tctx->update_visited = true;
+};
 
 TEST_F(sukat_bgp_test, sukat_bgp_test_init)
 {
@@ -149,6 +204,7 @@ TEST_F(sukat_bgp_test, sukat_bgp_test_init)
   default_cbs.open_cb = open_cb;
   default_cbs.keepalive_cb = keepalive_cb;
   default_cbs.notification_cb = notification_cb;
+  default_cbs.update_cb = update_cb;
 
   snprintf(portbuf, sizeof(portbuf), "0");
 
@@ -214,10 +270,221 @@ TEST_F(sukat_bgp_test, sukat_bgp_test_init)
   EXPECT_EQ(SUKAT_SEND_OK, send_ret);
 
   tctx.notification_should = true;
-  err = sukat_bgp_read(peer1, 0);
+  err = sukat_bgp_read(peer1, 100);
   EXPECT_EQ(0, err);
   EXPECT_EQ(true, tctx.notification_visited);
   tctx.notification_should = tctx.notification_visited = false;
+
+  // Im so lazy. I should make another test case but everything is nice here.
+    {
+      size_t i = 0;
+      struct sukat_bgp_attr_flags def_flags =
+        {
+          .optional = true,
+          .transitive = false,
+          .partial = true,
+          .extended = false,
+          .unused = 2,
+        };
+      uint8_t withdrawn_buf[128];
+      uint8_t reachability_buf[128];
+      // The fun stops here.
+      struct sukat_bgp_path_attr attr_array[] =
+        {
+            {
+              .next = NULL,
+              .flags = def_flags,
+              .attr_type = SUKAT_BGP_ATTR_ORIGIN,
+              .value =
+                {
+                  .origin = 4,
+                },
+            },
+            {
+              .next = &attr_array[i++],
+              .flags = def_flags,
+              .attr_type = SUKAT_BGP_ATTR_ATOMIC_AGGREGATE,
+              // Just set something. Length is zero.
+              .value =
+                {
+                  .origin = 4,
+                },
+            },
+            {
+              .next = &attr_array[i++],
+              .flags = def_flags,
+              .attr_type = SUKAT_BGP_ATTR_NEXT_HOP,
+              .value =
+                {
+                  .next_hop = UINT32_MAX - 1,
+                }
+            },
+            {
+              .next = &attr_array[i++],
+              .flags = def_flags,
+              .attr_type = SUKAT_BGP_ATTR_MULTI_EXIT_DISC,
+              .value =
+                {
+                  .multi_exit_disc = UINT32_MAX - 2,
+                }
+            },
+            {
+              .next = &attr_array[i++],
+              .flags = def_flags,
+              .attr_type = SUKAT_BGP_ATTR_LOCAL_PREF,
+              .value =
+                {
+                  .next_hop = UINT32_MAX - 3,
+                }
+            },
+            {
+              .next = &attr_array[i++],
+              .flags = def_flags,
+              .attr_type = SUKAT_BGP_ATTR_AGGREGATOR,
+              .value =
+                {
+                  .aggregator =
+                    {
+                      .as_number = 45,
+                      .ip = 9999,
+                    },
+                }
+            },
+        };
+      // One more AS_PATH attribute, which is tricky.
+      uint8_t as_path_buf[128];
+      struct sukat_bgp_path_attr *root_atr =
+        (struct sukat_bgp_path_attr *)as_path_buf;
+      struct sukat_bgp_update update =
+        {
+          .withdrawn_length = sizeof(withdrawn_buf),
+          .withdrawn = (struct sukat_bgp_lp *)withdrawn_buf,
+          .path_attr = root_atr,
+          .reachability_length = sizeof(reachability_buf),
+          .reachability = (struct sukat_bgp_lp *)reachability_buf,
+        };
+
+      root_atr->attr_type = SUKAT_BGP_ATTR_AS_PATH;
+      root_atr->next = &attr_array[i - 1];
+      root_atr->flags = def_flags;
+      root_atr->value.as_path.type = SUKAT_BGP_AS_SEQUENCE;
+      root_atr->value.as_path.number_of_as_numbers = 3;
+
+      root_atr->value.as_path.as_numbers[0] = 3;
+      root_atr->value.as_path.as_numbers[1] = 4;
+      root_atr->value.as_path.as_numbers[2] = 5;
+
+      tctx.match_update = &update;
+      memset(reachability_buf, 1, sizeof(reachability_buf));
+      memset(withdrawn_buf, 2, sizeof(withdrawn_buf));
+
+        {
+          uint8_t msg_buf[BGP_MAX_LEN];
+          struct bgp_msg *msg  = (struct bgp_msg *)msg_buf;
+          bool bret;
+          uint8_t *ptr;
+          int memval;
+          uint16_t length, val16;
+          uint32_t val32;
+          struct sukat_bgp_path_attr *attr;
+          // Check that it gets formatted correctly.
+
+          // First check that it stops on too small buffer.
+          bret = bgp_update_form(&update, msg_buf, sizeof(msg->hdr));
+          EXPECT_EQ(false, bret);
+
+          bret = bgp_update_form(&update, msg_buf, sizeof(msg_buf));
+          EXPECT_EQ(true, bret);
+          // Check header.
+          EXPECT_EQ(BGP_MSG_UPDATE, msg->hdr.type);
+          ptr = msg->msg.update;
+
+          // Check withdrawn.
+          length = ntohs(*(uint16_t *)ptr);
+          EXPECT_EQ(update.withdrawn_length, length);
+          ptr += sizeof(uint16_t);
+          memval = memcmp(ptr, update.withdrawn, update.withdrawn_length);
+          EXPECT_EQ(0, memval);
+          ptr += update.withdrawn_length;
+
+          // Check attributes.
+          length = ntohs(*(uint16_t *)ptr);
+          EXPECT_LT(0, length);
+          ptr += sizeof(uint16_t);
+          attr = root_atr;
+          while (attr)
+            {
+              struct bgp_path_attr *attr_head = (struct bgp_path_attr *)ptr;
+              union
+                {
+                  uint8_t *ptr;
+                  struct bgp_as_path_network *path;
+                  struct sukat_bgp_aggregator *aggregator;
+                  uint32_t *val32;
+                } payload;
+
+              EXPECT_EQ(attr_head->type, attr->attr_type);
+              ptr += sizeof(*attr_head);
+              payload.ptr = ptr;
+              memval =
+                memcmp(&attr_head->flags, &attr->flags, sizeof(attr->flags));
+              EXPECT_EQ(0, memval);
+              switch (attr->attr_type)
+                {
+                case SUKAT_BGP_ATTR_ORIGIN:
+                  EXPECT_EQ(*payload.ptr, attr->value.origin);
+                  ptr++;
+                  break;
+                case SUKAT_BGP_ATTR_AS_PATH:
+                  EXPECT_EQ(payload.path->type, attr->value.as_path.type);
+                  EXPECT_EQ(payload.path->number_of_as_numbers,
+                            attr->value.as_path.number_of_as_numbers);
+                  ptr += sizeof(*payload.path);
+                  for (i = 0; i < attr->value.as_path.number_of_as_numbers; i++)
+                    {
+                      val16 = ntohs(payload.path->as_numbers[i]);
+                      EXPECT_EQ(attr->value.as_path.as_numbers[i], val16);
+                      ptr += sizeof(uint16_t);
+                    }
+                  break;
+                case SUKAT_BGP_ATTR_NEXT_HOP:
+                case SUKAT_BGP_ATTR_MULTI_EXIT_DISC:
+                case SUKAT_BGP_ATTR_LOCAL_PREF:
+                  EXPECT_EQ(ntohl(*payload.val32), attr->value.next_hop);
+                  ptr += sizeof(uint32_t);
+                  break;
+                case SUKAT_BGP_ATTR_AGGREGATOR:
+                  val16 = ntohs(payload.aggregator->as_number);
+                  EXPECT_EQ(attr->value.aggregator.as_number, val16);
+                  val32 = ntohl(payload.aggregator->ip);
+                  EXPECT_EQ(attr->value.aggregator.ip, val32);
+                  ptr += sizeof(*payload.aggregator);
+                  break;
+                case SUKAT_BGP_ATTR_ATOMIC_AGGREGATE:
+                  break;
+                default:
+                  EXPECT_EQ(true, false);
+                  break;
+                }
+              attr = attr->next;
+            }
+
+          // Check reachability.
+          length = ntohs(msg->hdr.length) - (ptr - msg_buf);
+          EXPECT_EQ(update.reachability_length, length);
+          memval = memcmp(update.reachability, ptr, length);
+          EXPECT_EQ(0, memval);
+        }
+
+      send_ret = sukat_bgp_send_update(peer2, peer1_from_peer2, &update);
+      EXPECT_EQ(SUKAT_SEND_OK, send_ret);
+
+      tctx.update_should = true;
+      err = sukat_bgp_read(peer1, 100);
+      EXPECT_EQ(0, err);
+      EXPECT_EQ(true, tctx.update_visited);
+      tctx.update_should = tctx.update_visited = false;
+    }
 
   sukat_bgp_disconnect(peer1, peer2_from_peer1);
   sukat_bgp_disconnect(peer2, peer1_from_peer2);

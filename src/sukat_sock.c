@@ -693,7 +693,7 @@ static ret_t server_accept_cb(sukat_sock_t *ctx,
 {
   struct sockaddr_storage saddr;
   socklen_t slen = sizeof(saddr);
-  int fd;
+  int fd = -1;
 
   assert(ctx != NULL && endpoint != NULL);
 
@@ -1115,7 +1115,7 @@ sukat_sock_t *sukat_sock_create(struct sukat_sock_params *params,
   ctx->epoll_fd = ctx->master_epoll_fd = -1;
   ctx->caller_ctx = params->caller_ctx;
   ctx->epoll_fd = epoll_create1(EPOLL_CLOEXEC);
-  if (!ctx->epoll_fd) {
+  if (ctx->epoll_fd < 0) {
       ERR(ctx, "Failed to create epoll fd: %s", strerror(errno));
       goto fail;
   }
@@ -1201,7 +1201,7 @@ sukat_sock_endpoint_t
                            && socket_connection_oriented(params->type))
                     {
                       bool destroyed_in_between;
-                      void *new_caller_ctx;
+                      void *new_caller_ctx = NULL;
 
                       destro_cb_enter(ctx->destro_ctx);
                       USE_CB_WRET(ctx, new_caller_ctx, conn_cb,
