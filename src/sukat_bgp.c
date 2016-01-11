@@ -297,13 +297,17 @@ static void msg_header_fill(struct bgp_msg *msg, enum bgp_msg_type type,
   memset(msg->hdr.marker, 1, sizeof(msg->hdr.marker));
 }
 
-static enum sukat_sock_send_return msg_send_keepalive(sukat_bgp_t *bgp_ctx,
-                                                      sukat_bgp_peer_t *peer)
+enum sukat_sock_send_return sukat_bgp_send_keepalive(sukat_bgp_t *bgp_ctx,
+                                                     sukat_bgp_peer_t *peer)
 {
   struct bgp_msg msg = { };
   size_t msg_len = sizeof(msg.hdr);
 
-  assert(bgp_ctx != NULL && peer != NULL);
+  if (!bgp_ctx || !peer)
+    {
+      ERR(bgp_ctx, "No %s given to keepalive", (!peer) ? "peer" : "context");
+      return SUKAT_SEND_ERROR;
+    }
   msg_header_fill(&msg, BGP_MSG_KEEPALIVE, msg_len);
   DBG_PEER(bgp_ctx, peer, "Sending KEEPALIVE");
 
@@ -574,7 +578,7 @@ static void bgp_msg_cb(void *ctx,
           if (!destro_is_deleted(bgp_ctx->destro_ctx,
                                  &bgp_peer->destro_client_ctx))
             {
-              if (msg_send_keepalive(bgp_ctx, bgp_peer) != SUKAT_SEND_OK)
+              if (sukat_bgp_send_keepalive(bgp_ctx, bgp_peer) != SUKAT_SEND_OK)
                 {
                   ERR_PEER(bgp_ctx, bgp_peer,
                            "Failed to send KEEPALIVE after open");

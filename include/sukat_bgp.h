@@ -272,6 +272,17 @@ enum sukat_sock_send_return
                         struct sukat_bgp_update *update);
 
 /*!
+ * @brief Sends a keepalive to the \p peer
+ *
+ * @param bgp_ctx       BGP context.
+ * @param peer          Peer to send keepalive to.
+ *
+ * @return ::sukat_sock_send_return
+ */
+enum sukat_sock_send_return sukat_bgp_send_keepalive(sukat_bgp_t *bgp_ctx,
+                                                     sukat_bgp_peer_t *peer);
+
+/*!
  * @briefs Connects to \p peer
  *
  * @param ctx   Main BGP context.
