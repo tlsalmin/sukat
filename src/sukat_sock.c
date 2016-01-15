@@ -1064,6 +1064,10 @@ int sukat_sock_read(sukat_sock_t *ctx, int timeout)
       if (nfds < 0)
         {
           ERR(ctx, "Failed to wait for events: %s", strerror(errno));
+          if (errno == EINTR)
+            {
+              goto out;
+            }
           ret = ERR_FATAL;
           goto out;
         }

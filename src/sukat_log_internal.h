@@ -29,6 +29,18 @@ void sukat_do_log(sukat_log_cb log_cb, enum sukat_log_lvl lvl, const char *func,
 #define DBG(...)
 #endif
 
+//! In time of need, just initialize a dummy struct for using these macroes.
+struct dummy_cbs
+{
+  sukat_log_cb log_cb;
+};
+
+struct dummy_ctx
+{
+  struct dummy_cbs cbs;
+};
+
+
 #endif /* !SUKAT_LOG_INTERNAL_H */
 
 /*! }@ */
