@@ -22,6 +22,7 @@ struct bgp_query_ctx
   bgp_id_t id;
   sukat_bgp_t *bgp_ctx;
   const char *target;
+  const char *bgp_string;
   bool only_server;
 };
 
@@ -123,7 +124,7 @@ static bool parse_opts(struct bgp_query_ctx *ctx, int argc, char **argv)
           ctx->id.as_num = safe_unsigned(optarg, UINT16_MAX);
           break;
         case 'b':
-          ctx->id.bgp_id = safe_unsigned(optarg, UINT32_MAX);
+          ctx->bgp_string = optarg;
           break;
         case 't':
           ctx->target_port = safe_unsigned(optarg, UINT16_MAX);
@@ -174,6 +175,7 @@ int main(int argc, char **argv)
               .ip = (ctx.only_server) ? ctx.target : NULL,
               .port = portbuf
             },
+          .bgp_id_str = ctx.bgp_string,
           .caller_ctx = &query_ctx
         };
       struct sukat_bgp_cbs cbs =

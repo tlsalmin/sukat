@@ -294,7 +294,7 @@ static void msg_header_fill(struct bgp_msg *msg, enum bgp_msg_type type,
 {
   msg->hdr.length = htons(len);
   msg->hdr.type = type;
-  memset(msg->hdr.marker, 1, sizeof(msg->hdr.marker));
+  memset(msg->hdr.marker, 0xff, sizeof(msg->hdr.marker));
 }
 
 enum sukat_sock_send_return sukat_bgp_send_keepalive(sukat_bgp_t *bgp_ctx,
@@ -743,6 +743,38 @@ static void *bgp_conn_cb(void *caller_ctx, sukat_sock_endpoint_t *sock_peer,
   return NULL;
 }
 
+static bool bgp_bgp_id_from_ip(sukat_bgp_t *ctx,
+                               struct sukat_bgp_params *params)
+{
+  if (!ctx->id.bgp_id)
+    {
+      const char *ip = (params->bgp_id_str) ? params->bgp_id_str :
+        params->pinet.ip;
+
+      if (ip)
+        {
+          if (inet_pton(AF_INET, ip, &ctx->id.bgp_id) != 1)
+            {
+              ERR(ctx, "Failed to solve %s to a bgp_id: %s", ip,
+                  strerror(errno));
+              return false;
+            }
+          LOG(ctx, "set %s as bgp_id", ip);
+        }
+      else
+        {
+          ERR(ctx, "No predefined bgp_id given nor an IP given for BGP ID "
+              "querying");
+          return false;
+        }
+    }
+  else
+    {
+      LOG(ctx, "Using predefined %d as BGP id", ctx->id.bgp_id);
+    }
+  return true;
+}
+
 void bgp_destro_close(void *main_ctx, void *client_ctx)
 {
   sukat_bgp_t *ctx = (sukat_bgp_t *)main_ctx;
@@ -822,16 +854,19 @@ sukat_bgp_t *sukat_bgp_create(struct sukat_bgp_params *params,
           ctx->destro_ctx = destro_create(&dparams, &dcbs);
           if (ctx->destro_ctx)
             {
-              struct sukat_sock_endpoint_params eparams = { };
-
-              fill_endpoint_values(&eparams, &params->pinet);
-              eparams.server = true;
-              ctx->endpoint =
-                sukat_sock_endpoint_add(ctx->sock_ctx, &eparams);
-              if (ctx->endpoint)
+              if (bgp_bgp_id_from_ip(ctx, params) == true)
                 {
-                  LOG(ctx, "Created bgp context");
-                  return ctx;
+                  struct sukat_sock_endpoint_params eparams = { };
+
+                  fill_endpoint_values(&eparams, &params->pinet);
+                  eparams.server = true;
+                  ctx->endpoint =
+                    sukat_sock_endpoint_add(ctx->sock_ctx, &eparams);
+                  if (ctx->endpoint)
+                    {
+                      LOG(ctx, "Created bgp context");
+                      return ctx;
+                    }
                 }
               free(ctx->destro_ctx);
             }

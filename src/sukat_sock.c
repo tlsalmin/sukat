@@ -795,7 +795,7 @@ static ret_t read_stream(sukat_sock_t *ctx, sukat_sock_endpoint_t *endpoint)
 {
   uint8_t buf[BUFSIZ];
   ssize_t read_now;
-  bool blocked = false;
+  bool blocked = false, disconnected = false;
   size_t n_read = 0;
   void *caller_ctx = get_caller_ctx(ctx, endpoint);
 
@@ -804,7 +804,7 @@ static ret_t read_stream(sukat_sock_t *ctx, sukat_sock_endpoint_t *endpoint)
 
   uncache(ctx, endpoint, buf, &n_read, false);
 
-  while (blocked == false)
+  while (blocked == false && disconnected == false)
     {
       size_t processed;
 
@@ -814,7 +814,15 @@ static ret_t read_stream(sukat_sock_t *ctx, sukat_sock_endpoint_t *endpoint)
         } while (read_now > 0 && (n_read += read_now) < sizeof(buf));
       if (ret_was_ok(ctx, endpoint, read_now) != true)
         {
-          return ERR_FATAL;
+          // If we have unprocessed stuff, read it before disconnecting.
+          if (n_read)
+            {
+              disconnected = true;
+            }
+          else
+            {
+              return ERR_FATAL;
+            }
         }
       else if (ITBLOCKS(read_now))
         {
@@ -881,7 +889,7 @@ static ret_t read_stream(sukat_sock_t *ctx, sukat_sock_endpoint_t *endpoint)
         }
     }
 
-  return ERR_OK;
+  return (disconnected == true) ? ERR_FATAL : ERR_OK;
 }
 
 static ret_t read_seqpacket(sukat_sock_t *ctx, sukat_sock_endpoint_t *client)

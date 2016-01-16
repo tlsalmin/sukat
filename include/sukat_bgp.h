@@ -206,6 +206,8 @@ struct sukat_bgp_params
       uint8_t master_epoll_set:1;
       uint8_t unused:6;
     };
+  const char *bgp_id_str; /*!< Optional BGP in string format (e.g IPv4 address).
+                               Which will be converted to integer BGP ID. */
   void *caller_ctx; //!< Context given to callbacks.
 };
 
