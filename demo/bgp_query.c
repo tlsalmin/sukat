@@ -30,9 +30,9 @@ static void usage(const char *binary, const struct option *opts,
 {
   fprintf(stdout,
           "%1$s: Queries a given BGP server\n"
-          "Usage: %1$s [<options>] [<bgp_server_ip_or_dns>]\n"
-          "       If no target is given, the querier will stay\n"
-          "       in server mode\n",
+          "Usage: %1$s [<options>] <bgp_server_ip_or_dns>\n"
+          "       Target is either bound in server mode or\n"
+          "       connected to in client mode\n",
           binary);
   sukat_util_usage(opts, explanations, stdout);
 }
@@ -93,6 +93,7 @@ static bool parse_opts(struct bgp_query_ctx *ctx, int argc, char **argv)
         {"--target-port", required_argument, NULL, 't'},
         {"--as", required_argument, NULL, 'a'},
         {"--bgp", required_argument, NULL, 'b'},
+        {"--server", no_argument, NULL, 's'},
         {"--help", no_argument, NULL, 'h'},
         {}
     };
@@ -102,6 +103,7 @@ static bool parse_opts(struct bgp_query_ctx *ctx, int argc, char **argv)
       "Targets port. Default 179",
       "AS number sent to target",
       "BGP ID sent to target",
+      "Act as server only",
       "Print this help",
     };
   _Static_assert(sizeof(explanations) / sizeof (*explanations) ==
@@ -110,7 +112,7 @@ static bool parse_opts(struct bgp_query_ctx *ctx, int argc, char **argv)
   int c, what;
   optind = 1;
 
-  while ((c = getopt_long(argc, argv, "p:a:b:t:h", options, &what)) != -1)
+  while ((c = getopt_long(argc, argv, "p:a:b:t:hs", options, &what)) != -1)
     {
       switch (c)
         {
@@ -126,6 +128,9 @@ static bool parse_opts(struct bgp_query_ctx *ctx, int argc, char **argv)
         case 't':
           ctx->target_port = safe_unsigned(optarg, UINT16_MAX);
           break;
+        case 's':
+          ctx->only_server = true;
+          break;
         case 'h':
         default:
           goto fail;
@@ -136,9 +141,10 @@ static bool parse_opts(struct bgp_query_ctx *ctx, int argc, char **argv)
     {
       ctx->target = argv[optind];
     }
-  else
+  else if (ctx->only_server == false)
     {
-      ctx->only_server = true;
+      ERR("No target given for non-server BGP querier");
+      goto fail;
     }
   return true;
 
@@ -165,7 +171,7 @@ int main(int argc, char **argv)
           .id = ctx.id,
           .pinet =
             {
-              .ip = NULL,
+              .ip = (ctx.only_server) ? ctx.target : NULL,
               .port = portbuf
             },
           .caller_ctx = &query_ctx

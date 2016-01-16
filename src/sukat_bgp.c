@@ -771,10 +771,9 @@ void fill_endpoint_values(struct sukat_sock_endpoint_params *eparams,
                           struct sukat_sock_params_inet *pinet)
 {
   const char *bgp_port = "179";
-  const char *bind_to = "127.0.0.1";
 
   assert(eparams != NULL && pinet != NULL);
-  eparams->pinet.ip = (pinet->ip) ? pinet->ip : bind_to;
+  eparams->pinet.ip = (pinet->ip) ? pinet->ip : NULL;
   eparams->pinet.port = (pinet->port) ? pinet->port : bgp_port;
   eparams->domain = AF_UNSPEC;
   eparams->type = SOCK_STREAM;
