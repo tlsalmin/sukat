@@ -6,6 +6,7 @@
 #include <assert.h>
 #include <getopt.h>
 #include <stdlib.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -59,10 +60,10 @@ static void log_cb(enum sukat_log_lvl lvl, const char *msg)
 }
 
 static void *open_cb(__attribute__((unused)) void *ctx,
-                     __attribute__((unused)) sukat_bgp_peer_t *peer,
-                     bgp_id_t *id, sukat_sock_event_t event)
+                     sukat_bgp_peer_t *peer, sukat_sock_event_t event)
 {
   char ipstr[INET6_ADDRSTRLEN];
+  const bgp_id_t *id = sukat_bgp_get_bgp_id(peer);
   uint32_t address = htonl(id->bgp_id);
 
   LOG("BGP peer AS: %hu BGP_ID %s event %s", id->as_num,
@@ -73,10 +74,10 @@ static void *open_cb(__attribute__((unused)) void *ctx,
 }
 
 static void keepalive_cb(__attribute__((unused)) void *ctx,
-                         __attribute__((unused)) sukat_bgp_peer_t *peer,
-                         bgp_id_t *id)
+                         sukat_bgp_peer_t *peer)
 {
   char ipstr[INET6_ADDRSTRLEN];
+  const bgp_id_t *id = sukat_bgp_get_bgp_id(peer);
   uint32_t address = htonl(id->bgp_id);
 
   LOG("Got keepalive from %hu %s", id->as_num,
@@ -119,9 +120,10 @@ static void log_prefixes(void *start, const char *type, size_t length)
 
 static void update_cb(__attribute__((unused)) void *ctx,
                       __attribute__((unused)) sukat_bgp_peer_t *peer,
-                      bgp_id_t *id, struct sukat_bgp_update *update)
+                      struct sukat_bgp_update *update)
 {
   char ipstr[INET6_ADDRSTRLEN];
+  const bgp_id_t *id = sukat_bgp_get_bgp_id(peer);
   uint32_t address = htonl(id->bgp_id);
   struct sukat_bgp_path_attr *path_attr = update->path_attr;
   size_t i;
@@ -174,6 +176,28 @@ static void update_cb(__attribute__((unused)) void *ctx,
           break;
         }
       path_attr = path_attr->next;
+    }
+}
+
+static void notification_cb(__attribute__((unused)) void *ctx,
+                            sukat_bgp_peer_t *peer,
+                            uint8_t error_code, uint8_t subcode,
+                            uint8_t *data, size_t data_len)
+{
+  char ipstr[INET6_ADDRSTRLEN];
+  const bgp_id_t *id = sukat_bgp_get_bgp_id(peer);
+  uint32_t address = htonl(id->bgp_id);
+
+  LOG("Got Notification from %hu %s. Code %hhu subcode %hhu", id->as_num,
+      inet_ntop(AF_INET, &address, ipstr, sizeof(ipstr)), error_code,
+      subcode);
+  if (data && data_len)
+    {
+      char data_buffer[data_len + 1];
+
+      memcpy(data_buffer, data, data_len);
+      data_buffer[data_len] = '\0';
+      LOG("Notification contained data \"%s\"", data_buffer);
     }
 }
 
@@ -287,6 +311,7 @@ int main(int argc, char **argv)
           .log_cb = log_cb,
           .keepalive_cb = keepalive_cb,
           .update_cb = update_cb,
+          .notification_cb = notification_cb,
           .open_cb = open_cb
         };
       sukat_bgp_t *bgp_ctx;

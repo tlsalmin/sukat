@@ -64,7 +64,7 @@ struct bgp_test_ctx
   struct sukat_bgp_update *match_update;
 };
 
-static void *open_cb(void *ctx, sukat_bgp_peer_t *peer, bgp_id_t *id,
+static void *open_cb(void *ctx, sukat_bgp_peer_t *peer,
                      sukat_sock_event_t event)
 {
   struct bgp_test_ctx *tctx = (struct bgp_test_ctx *)ctx;
@@ -73,6 +73,8 @@ static void *open_cb(void *ctx, sukat_bgp_peer_t *peer, bgp_id_t *id,
   EXPECT_NE(nullptr, peer);
   if (tctx)
     {
+      const bgp_id_t *id= sukat_bgp_get_bgp_id(peer);
+      EXPECT_NE(nullptr, id);
       EXPECT_EQ(true, tctx->open_should_visit);
       tctx->open_visited = true;
       tctx->newest_client = peer;
@@ -88,9 +90,7 @@ static void *open_cb(void *ctx, sukat_bgp_peer_t *peer, bgp_id_t *id,
   return NULL;
 }
 
-static void keepalive_cb(void *ctx,
-                         __attribute__((unused)) sukat_bgp_peer_t *peer,
-                         bgp_id_t *id)
+static void keepalive_cb(void *ctx, sukat_bgp_peer_t *peer)
 {
   struct bgp_test_ctx *tctx = (struct bgp_test_ctx *)ctx;
 
@@ -98,6 +98,8 @@ static void keepalive_cb(void *ctx,
   EXPECT_NE(nullptr, peer);
   if (tctx)
     {
+      const bgp_id_t *id= sukat_bgp_get_bgp_id(peer);
+      EXPECT_NE(nullptr, id);
       EXPECT_EQ(true, tctx->keepalive_should);
       tctx->keepalive_visited = true;
       EXPECT_EQ(tctx->match_version, id->version);
@@ -131,19 +133,20 @@ static void notification_cb(void *ctx,
     }
 }
 
-static void update_cb(void *ctx, sukat_bgp_peer_t *peer, bgp_id_t *id,
+static void update_cb(void *ctx, sukat_bgp_peer_t *peer,
                       struct sukat_bgp_update *update)
 {
   struct bgp_test_ctx *tctx = (struct bgp_test_ctx *)ctx;
 
   EXPECT_NE(nullptr, tctx);
   EXPECT_NE(nullptr, peer);
-  EXPECT_NE(nullptr, id);
   if (tctx)
     {
       int cmpval;
       struct sukat_bgp_path_attr *attr, *attr_match;
+      const bgp_id_t *id = sukat_bgp_get_bgp_id(peer);
 
+      EXPECT_NE(nullptr, id);
       EXPECT_EQ(true, tctx->update_should);
       EXPECT_NE(nullptr, update);
       EXPECT_EQ(update->withdrawn_length, tctx->match_update->withdrawn_length);

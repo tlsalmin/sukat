@@ -60,7 +60,7 @@ typedef struct bgp_id
  *                      for this client.
  */
 typedef void *(*sukat_bgp_open_cb)(void *ctx, sukat_bgp_peer_t *peer,
-                                   bgp_id_t *id, sukat_sock_event_t event);
+                                   sukat_sock_event_t event);
 
 /*!
  * @brief Callback invoked when a keepalive message was received from \p peer.
@@ -69,8 +69,7 @@ typedef void *(*sukat_bgp_open_cb)(void *ctx, sukat_bgp_peer_t *peer,
  * @param peer  BGP peer context.
  * @param id    BGP peer ID.
  */
-typedef void (*sukat_bgp_keepalive_cb)(void *ctx, sukat_bgp_peer_t *peer,
-                                       bgp_id_t *id);
+typedef void (*sukat_bgp_keepalive_cb)(void *ctx, sukat_bgp_peer_t *peer);
 
 /*!
  * @brief Callback invoked when a notification is received from a peer.
@@ -199,7 +198,6 @@ struct sukat_bgp_update
  * @param update        Update message in host byte order.
  */
 typedef void (*sukat_bgp_update_cb)(void *ctx, sukat_bgp_peer_t *peer,
-                                    bgp_id_t *id,
                                     struct sukat_bgp_update *update);
 
 /*!
@@ -337,6 +335,16 @@ void sukat_bgp_disconnect(sukat_bgp_t *ctx, sukat_bgp_peer_t *peer);
  * @param attr_list List of attributes
  */
 void sukat_bgp_free_attr_list(struct sukat_bgp_path_attr *attr_list);
+
+/*!
+ * @brief Returns the bgp id of the peer.
+ *
+ * @param peer Peer for which to return bgp_id.
+ *
+ * @return != NULL      bgp_id.
+ * @return NULL         Invalid argument
+ */
+const bgp_id_t *sukat_bgp_get_bgp_id(sukat_bgp_peer_t *peer);
 
 #endif /* SUKAT_BGP_H */
 

@@ -577,7 +577,7 @@ static void bgp_msg_cb(void *ctx,
             (bgp_peer->flags.accepted_from_server_socket) ?
             SUKAT_SOCK_CONN_EVENT_ACCEPTED : SUKAT_SOCK_CONN_EVENT_CONNECT;
           void *new_caller_ctx =
-            bgp_ctx->cbs.open_cb(caller_ctx, bgp_peer, &bgp_peer->id, event);
+            bgp_ctx->cbs.open_cb(caller_ctx, bgp_peer, event);
 
           if (new_caller_ctx)
             {
@@ -600,7 +600,7 @@ static void bgp_msg_cb(void *ctx,
     case BGP_MSG_KEEPALIVE:
       if (bgp_ctx->cbs.keepalive_cb)
         {
-          bgp_ctx->cbs.keepalive_cb(caller_ctx, bgp_peer, &bgp_peer->id);
+          bgp_ctx->cbs.keepalive_cb(caller_ctx, bgp_peer);
         }
       break;
     case BGP_MSG_NOTIFICATION:
@@ -629,8 +629,7 @@ static void bgp_msg_cb(void *ctx,
         {
           if (bgp_ctx->cbs.update_cb)
             {
-              bgp_ctx->cbs.update_cb(caller_ctx, bgp_peer, &bgp_peer->id,
-                                     &update);
+              bgp_ctx->cbs.update_cb(caller_ctx, bgp_peer, &update);
             }
           sukat_bgp_free_attr_list(update.path_attr);
         }
@@ -644,6 +643,15 @@ static void bgp_msg_cb(void *ctx,
                msg->hdr.type);
       break;
     }
+}
+
+const bgp_id_t *sukat_bgp_get_bgp_id(sukat_bgp_peer_t *peer)
+{
+  if (peer)
+    {
+      return &peer->id;
+    }
+  return NULL;
 }
 
 static size_t msg_len_open(sukat_bgp_t *ctx)
@@ -707,7 +715,7 @@ static void *bgp_conn_cb(void *caller_ctx, sukat_sock_endpoint_t *sock_peer,
       LOG(ctx, "BGP client disconnected");
       if (ctx->cbs.open_cb)
         {
-          ctx->cbs.open_cb(bgp_caller_ctx, bgp_peer, &bgp_peer->id, event);
+          ctx->cbs.open_cb(bgp_caller_ctx, bgp_peer, event);
         }
       free(bgp_peer);
 
@@ -797,7 +805,7 @@ void bgp_destro_close(void *main_ctx, void *client_ctx)
       sukat_sock_disconnect(ctx->sock_ctx, bgp_peer->sock_peer);
       if (!bgp_peer->flags.destroyed && ctx->cbs.open_cb)
         {
-          ctx->cbs.open_cb(caller_ctx, bgp_peer, &bgp_peer->id,
+          ctx->cbs.open_cb(caller_ctx, bgp_peer,
                            SUKAT_SOCK_CONN_EVENT_DISCONNECT);
         }
     }
