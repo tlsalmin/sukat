@@ -42,9 +42,7 @@ flags = [
 '-Wno-long-long',
 '-Wno-variadic-macros',
 '-fexceptions',
-'-DNDEBUG',
-'-DSGE_DEBUG',
-'-DH2A_DEBUG',
+'-D_GNU_SOURCE',
 # You 100% do NOT need -DUSE_CLANG_COMPLETER in your flags; only the YCM
 # source code needs it.
 '-DUSE_CLANG_COMPLETER',

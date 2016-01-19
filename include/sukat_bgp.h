@@ -12,6 +12,7 @@
 #define SUKAT_BGP_H
 
 #include <stdint.h>
+#include <endian.h>
 #include "sukat_log.h"
 #include "sukat_sock.h"
 
@@ -99,12 +100,20 @@ typedef enum sukat_bgp_attr_type
 
 struct sukat_bgp_attr_flags
 {
+#if __BYTE_ORDER == __LITTLE_ENDIAN
+  uint8_t unused:4;
+  uint8_t extended:1;
+  uint8_t partial:1;
+  uint8_t transitive:1;
+  uint8_t optional:1;
+#elif __BYTE_ORDER == __BIG_ENDIAN
   uint8_t optional:1;
   uint8_t transitive:1;
   uint8_t partial:1;
   uint8_t extended:1;
   uint8_t unused:4;
-};
+#endif
+} __attribute__((packed));
 
 enum sukat_bgp_as_path_type
 {

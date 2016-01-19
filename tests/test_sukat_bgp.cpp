@@ -278,16 +278,14 @@ TEST_F(sukat_bgp_test, sukat_bgp_test_init)
   // Im so lazy. I should make another test case but everything is nice here.
     {
       size_t i = 0;
-      struct sukat_bgp_attr_flags def_flags =
-        {
-          .optional = true,
-          .transitive = false,
-          .partial = true,
-          .extended = false,
-          .unused = 2,
-        };
+      struct sukat_bgp_attr_flags def_flags = { };
       uint8_t withdrawn_buf[128];
       uint8_t reachability_buf[128];
+
+      def_flags.optional = true;
+      def_flags.partial = true;
+      def_flags.unused = 2;
+
       // The fun stops here.
       struct sukat_bgp_path_attr attr_array[] =
         {
@@ -425,6 +423,14 @@ TEST_F(sukat_bgp_test, sukat_bgp_test_init)
 
               EXPECT_EQ(attr_head->type, attr->attr_type);
               ptr += sizeof(*attr_head);
+              if (attr_head->flags.extended)
+                {
+                  ptr += 2;
+                }
+              else
+                {
+                  ptr += 1;
+                }
               payload.ptr = ptr;
               memval =
                 memcmp(&attr_head->flags, &attr->flags, sizeof(attr->flags));

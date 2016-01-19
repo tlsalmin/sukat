@@ -12,6 +12,8 @@
 #include "sukat_bgp.h"
 #include "sukat_util.h"
 #include "demo_log.h"
+#include <arpa/inet.h>
+#include <netinet/in.h>
 
 bool keep_running;
 
@@ -60,7 +62,11 @@ static void *open_cb(__attribute__((unused)) void *ctx,
                      __attribute__((unused)) sukat_bgp_peer_t *peer,
                      bgp_id_t *id, sukat_sock_event_t event)
 {
-  LOG("BGP peer AS: %hu BGP_ID %u event %s", id->as_num, id->bgp_id,
+  char ipstr[INET6_ADDRSTRLEN];
+  uint32_t address = htonl(id->bgp_id);
+
+  LOG("BGP peer AS: %hu BGP_ID %s event %s", id->as_num,
+      inet_ntop(AF_INET, &address, ipstr, sizeof(ipstr)),
       (event == SUKAT_SOCK_CONN_EVENT_DISCONNECT) ? "Disconnected" :
       "Connected");
   return NULL;
@@ -70,7 +76,105 @@ static void keepalive_cb(__attribute__((unused)) void *ctx,
                          __attribute__((unused)) sukat_bgp_peer_t *peer,
                          bgp_id_t *id)
 {
-  LOG("Got keepalive from %hu %d", id->as_num, id->bgp_id);
+  char ipstr[INET6_ADDRSTRLEN];
+  uint32_t address = htonl(id->bgp_id);
+
+  LOG("Got keepalive from %hu %s", id->as_num,
+      inet_ntop(AF_INET, &address, ipstr, sizeof(ipstr)));
+}
+
+static void log_prefixes(void *start, const char *type, size_t length)
+{
+  char ipstr[INET6_ADDRSTRLEN];
+  size_t parsed;
+
+  for (parsed = 0; parsed < length;)
+    {
+      struct sukat_bgp_lp *lp = (struct sukat_bgp_lp *)start + parsed;
+      uint32_t prefix = 0;
+      size_t copy_len = 0;
+
+      if (lp->length > 0)
+        {
+          copy_len = 1 + (lp->length - 1) / 8;
+        }
+      if (copy_len > 4)
+        {
+          ERR("Illegal copy request of %lu bytes", copy_len);
+          return;
+        }
+      else
+        {
+          if (copy_len)
+            {
+              memcpy(&prefix, lp->prefix, copy_len);
+            }
+          LOG("%s prefix %s/%u", type,
+              inet_ntop(AF_INET, &prefix, ipstr, sizeof(ipstr)), lp->length);
+
+        }
+      parsed += 1 + copy_len;
+    }
+}
+
+static void update_cb(__attribute__((unused)) void *ctx,
+                      __attribute__((unused)) sukat_bgp_peer_t *peer,
+                      bgp_id_t *id, struct sukat_bgp_update *update)
+{
+  char ipstr[INET6_ADDRSTRLEN];
+  uint32_t address = htonl(id->bgp_id);
+  struct sukat_bgp_path_attr *path_attr = update->path_attr;
+  size_t i;
+
+  LOG("Got update from %hu %s", id->as_num,
+      inet_ntop(AF_INET, &address, ipstr, sizeof(ipstr)));
+  log_prefixes(update->withdrawn, "Withdrawn", update->withdrawn_length);
+  log_prefixes(update->reachability, "Reachable", update->reachability_length);
+
+  while (path_attr)
+    {
+      LOG("Flags: extended: %hhu partial: %hhu transitive %hhu optional %hhu",
+          path_attr->flags.extended, path_attr->flags.partial,
+          path_attr->flags.transitive, path_attr->flags.optional);
+      switch (path_attr->attr_type)
+        {
+        case SUKAT_BGP_ATTR_ORIGIN:
+          LOG("Origin: %hhu", path_attr->value.origin);
+          break;
+        case SUKAT_BGP_ATTR_AS_PATH:
+          LOG("AS_PATH: AS_%s", (path_attr->value.as_path.type == SUKAT_BGP_AS_SET) ?
+              "SET" : "SEQUENCE");
+          for (i = 0; i < path_attr->value.as_path.number_of_as_numbers; i++)
+            {
+              LOG("AS number %hu", path_attr->value.as_path.as_numbers[i]);
+            }
+          break;
+        case SUKAT_BGP_ATTR_NEXT_HOP:
+          address = htonl(path_attr->value.next_hop);
+          LOG("Next hop %s",
+              inet_ntop(AF_INET, &address, ipstr, sizeof(ipstr)));
+          break;
+        case SUKAT_BGP_ATTR_MULTI_EXIT_DISC:
+          LOG("Multi exit disc %u", path_attr->value.multi_exit_disc);
+          break;
+        case SUKAT_BGP_ATTR_LOCAL_PREF:
+          LOG("Local pref %u", path_attr->value.local_pref);
+          break;
+        case SUKAT_BGP_ATTR_ATOMIC_AGGREGATE:
+          LOG("Atomic Aggregate");
+          break;
+        case SUKAT_BGP_ATTR_AGGREGATOR:
+          address = htonl(path_attr->value.aggregator.ip);
+          LOG("Aggregator: AS number: %hu IP: %s",
+              path_attr->value.aggregator.as_number,
+              inet_ntop(AF_INET, &address, ipstr, sizeof(ipstr)));
+          break;
+        default:
+          ERR("Unknown type %u", path_attr->attr_type);
+          break;
+        }
+      path_attr = path_attr->next;
+    }
 }
 
 static int safe_unsigned(char *value_in_ascii, long long int max_size)
@@ -182,6 +286,7 @@ int main(int argc, char **argv)
         {
           .log_cb = log_cb,
           .keepalive_cb = keepalive_cb,
+          .update_cb = update_cb,
           .open_cb = open_cb
         };
       sukat_bgp_t *bgp_ctx;

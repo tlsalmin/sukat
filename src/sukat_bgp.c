@@ -365,7 +365,8 @@ static struct sukat_bgp_path_attr *
     {
       struct bgp_path_attr *attr_head = (struct bgp_path_attr *)ptr;
       struct sukat_bgp_path_attr *new_attr = NULL;
-      int extra_increment;
+      uint16_t extra_increment;
+      int extra_alloc;
       struct sukat_bgp_as_path *path;
       size_t i;
       union
@@ -384,17 +385,25 @@ static struct sukat_bgp_path_attr *
         }
       ptr += sizeof(*attr_head);
 
-      extra_increment = bgp_attr_get_extra_length_and_check(attr_head,
-                                                            ptr,
-                                                            N_LEFT);
-      if (extra_increment < 0)
+      if (attr_head->flags.extended)
+        {
+          extra_increment = ntohs(*(uint16_t *)ptr);
+          ptr += sizeof(uint16_t);
+        }
+      else
+        {
+          extra_increment = *(uint8_t *)ptr;
+          ptr += sizeof(uint8_t);
+        }
+      extra_alloc = bgp_attr_get_extra_length_and_check(attr_head, ptr, N_LEFT);
+      if (N_LEFT < extra_increment || extra_alloc < 0)
         {
           ERR(bgp_ctx, "Not enough data for left (%u) in message for type %hhu",
               N_LEFT, attr_head->type);
           goto fail;
         }
       new_attr = (struct sukat_bgp_path_attr *)calloc(1, sizeof(*new_attr) +
-                                                      extra_increment);
+                                                      extra_alloc);
       if (!new_attr)
         {
           ERR(bgp_ctx, "Couldn't allocate memory for new path attribute: %s",
@@ -976,7 +985,7 @@ static int msg_fill_attrs(struct sukat_bgp_path_attr *attr, uint8_t *buf,
           uint32_t *val32;
         } payload;
 
-      next_item_len = sizeof(*head) +
+      next_item_len =
         bgp_msg_static_len(attr->attr_type,
                            (attr->attr_type == SUKAT_BGP_ATTR_AS_PATH) ?
                            attr->value.as_path.number_of_as_numbers : 0);
@@ -987,7 +996,23 @@ static int msg_fill_attrs(struct sukat_bgp_path_attr *attr, uint8_t *buf,
 
       head->flags = attr->flags;
       head->type = (uint8_t )attr->attr_type;
-      payload.ptr = ptr + sizeof(*head);
+      ptr += sizeof(*head);
+      if (next_item_len <= UINT8_MAX)
+        {
+          *ptr = (uint8_t)next_item_len;
+          ptr++;
+        }
+      else if (next_item_len <= UINT16_MAX)
+        {
+          *(uint16_t *)ptr = htons((uint16_t)next_item_len);
+          ptr += 2;
+          head->flags.extended = true;
+        }
+      else
+        {
+          return -1;
+        }
+      payload.ptr = ptr;
       switch (attr->attr_type)
         {
         case SUKAT_BGP_ATTR_ORIGIN:
