@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <stdio.h>
+#include <errno.h>
 #include <stdint.h>
 #include <string.h>
 #include "sukat_bgp.h"
@@ -282,6 +283,12 @@ fail:
   return false;
 }
 
+static void sighandler(int siggie)
+{
+  LOG("Received signal %d", siggie);
+  keep_running = false;
+}
+
 int main(int argc, char **argv)
 {
   int exit_val = EXIT_FAILURE;
@@ -336,16 +343,33 @@ int main(int argc, char **argv)
               (peer = sukat_bgp_peer_add(bgp_ctx, &peer_inet)) != NULL)
             {
               keep_running = true;
-              exit_val = EXIT_SUCCESS;
-
-              while (keep_running)
+              struct sigaction old_action, new_action =
                 {
-                  int err = sukat_bgp_read(bgp_ctx, 1000);
+                  .sa_handler = sighandler,
+                };
 
-                  if (err < 0)
+              if (!sigaction(SIGINT, &new_action, &old_action))
+                {
+                  exit_val = EXIT_SUCCESS;
+
+                  while (keep_running)
                     {
-                      keep_running = false;
+                      int err = sukat_bgp_read(bgp_ctx, 1000);
+
+                      if (err < 0)
+                        {
+                          keep_running = false;
+                        }
                     }
+                  if (sigaction(SIGINT, &old_action, NULL))
+                    {
+                      ERR("Failed to restore signal handler: %s",
+                          strerror(errno));
+                    }
+                }
+              else
+                {
+                  ERR("Failed to set signal handler: %s", strerror(errno));
                 }
               if (peer)
                 {

@@ -802,6 +802,17 @@ void bgp_destro_close(void *main_ctx, void *client_ctx)
       void *caller_ctx = (bgp_peer->caller_ctx) ? bgp_peer->caller_ctx :
         ctx->caller_ctx;
 
+      if (bgp_peer->flags.destroyed)
+        {
+          LOG(ctx, "Sending closure notification");
+          // Send a notify of closure.
+          if (sukat_bgp_send_notification(ctx, bgp_peer, 6, 2, NULL, 0)
+              != SUKAT_SEND_OK)
+            {
+              ERR(ctx, "Failed to send closure notification");
+            }
+        }
+
       sukat_sock_disconnect(ctx->sock_ctx, bgp_peer->sock_peer);
       if (!bgp_peer->flags.destroyed && ctx->cbs.open_cb)
         {
