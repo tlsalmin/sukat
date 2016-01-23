@@ -47,8 +47,6 @@ typedef enum sukat_sock_new_conn_event
  *
  * @param ctx           Caller context.
  * @param endpoint      Endpoint context that can be replied to.
- * @param sockaddr      Data identifying the connected peer.
- * @param sock_len      The length of the identifying information.
  * @param event         Event that occurred.
  *
  * @return NULL         Continue using this \p ctx for callback involving this
@@ -58,8 +56,6 @@ typedef enum sukat_sock_new_conn_event
  */
 typedef void *(*sukat_sock_new_conn_cb)(void *ctx,
                                         sukat_sock_endpoint_t *endpoint,
-                                        struct sockaddr_storage *sockaddr,
-                                        size_t sock_len,
                                         sukat_sock_event_t event);
 
 /*!
@@ -114,6 +110,8 @@ struct sukat_sock_params
                             epoll fd. */
   bool master_epoll_fd_set; //!< If true, use master_epoll_fd
   void *caller_ctx; //!< Default context passed to callbacks.
+  size_t max_packet_size; /*!< If set, use as max expected packet length.
+                               Larger packets may be truncated */
 };
 
 /*!
@@ -180,7 +178,11 @@ struct sukat_sock_endpoint_params
   int domain; //!< AF_UNIX, AF_UNSPEC(AF_INET or AF_INET6) or AF_TIPC
   int type; //!< SOCK_STREAM, SOCK_DGRAM, SOCK_SEQPACKET or SOCK_RDM.
   size_t listen; //!< If non-zero, use for listen parameter (man 2 listen).
-  bool server; //!< If true, act as server.
+  struct
+    {
+      uint8_t server:1; //!< If true, act as server.
+      uint8_t unused:6;
+    };
   union
     {
       struct sukat_sock_params_inet pinet;
@@ -268,24 +270,31 @@ enum sukat_sock_send_return
  * @param id            If non-null, the endpoint to send message to.
  * @param msg           Message to send.
  * @param msg_len       Length of message.
+ * @param source        Optional source endpoint for connections that are not
+ *                      connection oriented. This will send the messages from
+ *                      the given source. Otherwise the source is created for
+ *                      the sending of the message, giving e.g. a random port
+ *                      for a AF_INET-type message.
  *
  * @return ::sukat_sock_send_return
  */
 enum sukat_sock_send_return sukat_send_msg(sukat_sock_t *ctx,
                                            sukat_sock_endpoint_t *endpoint,
-                                           uint8_t *msg, size_t msg_len);
+                                           uint8_t *msg, size_t msg_len,
+                                           sukat_sock_endpoint_t *source);
 
 /*!
- * Converts the peer information \p saddr into a human readable format to
+ * Converts the peer information \p endpoint into a human readable format to
  * \p buf.
  *
+ * @param endpoint      Endpoint to stringify.
  * @param saddr         Socket information.
  * @param sock_len      Length of socket information.
  *
  * @return \p buf
  */
-char *sukat_sock_stringify_peer(struct sockaddr_storage *saddr, size_t sock_len,
-                                char *buf, size_t buf_len);
+char *sukat_sock_endpoint_to_str(sukat_sock_endpoint_t *endpoint,
+                                 char *buf, size_t buf_len);
 
 /*!
  * Returns the port in host byte order from a AF_INET or AF_INET6 socket.

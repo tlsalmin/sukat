@@ -312,7 +312,7 @@ enum sukat_sock_send_return sukat_bgp_send_keepalive(sukat_bgp_t *bgp_ctx,
   DBG_PEER(bgp_ctx, peer, "Sending KEEPALIVE");
 
   return sukat_send_msg(bgp_ctx->sock_ctx, peer->sock_peer, (uint8_t *)&msg,
-                        msg_len);
+                        msg_len, NULL);
 }
 
 static int bgp_attr_get_extra_length_and_check(struct bgp_path_attr *head,
@@ -684,7 +684,7 @@ static bool msg_send_open(sukat_bgp_t *ctx, sukat_bgp_peer_t *peer)
   msg->msg.open.opt_param_len = 0;
 
   if (sukat_send_msg(ctx->sock_ctx, peer->sock_peer,
-                     buf, msg_len) == SUKAT_SEND_OK)
+                     buf, msg_len, NULL) == SUKAT_SEND_OK)
     {
       LOG(ctx, "Sent open message to peer");
       return true;
@@ -694,7 +694,6 @@ static bool msg_send_open(sukat_bgp_t *ctx, sukat_bgp_peer_t *peer)
 }
 
 static void *bgp_conn_cb(void *caller_ctx, sukat_sock_endpoint_t *sock_peer,
-                         struct sockaddr_storage *sockaddr, size_t sock_len,
                          sukat_sock_event_t event)
 {
   sukat_bgp_peer_t *bgp_peer;
@@ -729,8 +728,7 @@ static void *bgp_conn_cb(void *caller_ctx, sukat_sock_endpoint_t *sock_peer,
       assert(ctx != NULL);
       LOG(ctx, "New BGP %s from %s",
           (sock_peer) ? "client" : "server connection",
-          sukat_sock_stringify_peer(sockaddr, sock_len, peer_buf,
-                                    sizeof(peer_buf)));
+          sukat_sock_endpoint_to_str(sock_peer, peer_buf, sizeof(peer_buf)));
 
       bgp_peer = (sukat_bgp_peer_t *)calloc(1, sizeof(*bgp_peer));
       if (!bgp_peer)
@@ -868,6 +866,7 @@ sukat_bgp_t *sukat_bgp_create(struct sukat_bgp_params *params,
       sock_params.caller_ctx = (void *)ctx;
       sock_params.master_epoll_fd = params->master_epoll_fd;
       sock_params.master_epoll_fd_set = params->master_epoll_set;
+      sock_params.max_packet_size = BGP_MAX_LEN;
 
       ctx->sock_ctx = sukat_sock_create(&sock_params, &sock_cbs);
       if (ctx->sock_ctx)
@@ -983,7 +982,7 @@ enum sukat_sock_send_return sukat_bgp_send_notification(sukat_bgp_t *bgp_ctx,
   msg->msg.notification.error_subcode = error_subcode;
   memcpy(msg->msg.notification.data, data, data_len);
 
-  return sukat_send_msg(bgp_ctx->sock_ctx, peer->sock_peer, buf, msg_len);
+  return sukat_send_msg(bgp_ctx->sock_ctx, peer->sock_peer, buf, msg_len, NULL);
 }
 
 static int msg_fill_attrs(struct sukat_bgp_path_attr *attr, uint8_t *buf,
@@ -1144,7 +1143,7 @@ sukat_bgp_send_update(sukat_bgp_t *bgp_ctx, sukat_bgp_peer_t *peer,
                    ntohs(msg->hdr.length));
 
           return sukat_send_msg(bgp_ctx->sock_ctx, peer->sock_peer,
-                                buf, ntohs(msg->hdr.length));
+                                buf, ntohs(msg->hdr.length), NULL);
         }
       ERR(bgp_ctx, "Update message requested for sending too larger for BGP "
           "maximum length (%u)", BGP_MAX_LEN);

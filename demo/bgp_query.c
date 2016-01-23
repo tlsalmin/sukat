@@ -47,10 +47,10 @@ static void log_cb(enum sukat_log_lvl lvl, const char *msg)
   switch (lvl)
     {
     case SUKAT_LOG_ERROR:
-      ERR("%s", msg);
+      fprintf(stderr, "%s\n", msg);
       break;
     case SUKAT_LOG:
-      LOG("%s", msg);
+      fprintf(stdout, "%s\n", msg);
       break;
     case SUKAT_LOG_DBG:
       break;

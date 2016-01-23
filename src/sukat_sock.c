@@ -67,7 +67,8 @@ struct sukat_sock_endpoint_ctx
       uint8_t closed:1; //!< True if peer already closed
       uint8_t connect_in_progress:1; //!< Connect not yet completed.
       uint8_t is_server:1; //!< True if this is a server socket.
-      uint8_t unused:3;
+      uint8_t stack_dummy:1; //!< Stack allocated dummy in connectionless read.
+      uint8_t unused:2;
   };
   struct fd_info info;
   struct rw_cache read_cache;
@@ -80,6 +81,7 @@ struct sukat_sock_ctx
   void *caller_ctx; //!< If connection specific context not specied, use this.
   int epoll_fd;
   size_t n_connections;
+  size_t max_packet_size;
   int master_epoll_fd;
   destro_t *destro_ctx;
 };
@@ -124,29 +126,37 @@ static bool socket_connection_oriented(int type)
     }                                                                         \
   while (0)
 
+static size_t sock_log_type(int type, char *buf, size_t buf_len)
+{
+  size_t ret;
+
+  switch(type)
+    {
+    case SOCK_STREAM:
+      ret = snprintf(buf, buf_len, "Stream ");
+      break;
+    case SOCK_DGRAM:
+      ret = snprintf(buf, buf_len, "Datagram ");
+      break;
+    case SOCK_SEQPACKET:
+      ret = snprintf(buf, buf_len, "Seqpacket ");
+      break;
+    default:
+      ret = snprintf(buf, buf_len, "Unknown type %d ", type);
+      break;
+    }
+
+  return ret;
+}
+
 static char *socket_log_params(struct sukat_sock_endpoint_params *params,
                                char *buf, size_t buf_len)
 {
-
   size_t n_used = 0;
 
   assert(buf != NULL && buf_len > 0 && params != NULL);
 
-  switch(params->type)
-    {
-    case SOCK_STREAM:
-      SAFEPUT("Stream ");
-      break;
-    case SOCK_DGRAM:
-        SAFEPUT("Datagram ");
-      break;
-    case SOCK_SEQPACKET:
-      SAFEPUT("Seqpacket ");
-      break;
-    default:
-      SAFEPUT("Unknown type %d", params->type);
-      break;
-    }
+  n_used += sock_log_type(params->type, buf, buf_len);
 
   SAFEPUT((params->server) ? "server ": "client ");
   switch (params->domain)
@@ -179,28 +189,17 @@ static char *socket_log_fd_info(struct fd_info *info, char *buf, size_t buf_len)
   int domain;
 
   assert(info != NULL && buf != NULL && buf_len > 0);
-  switch(info->type)
-    {
-    case SOCK_STREAM:
-      SAFEPUT("Stream ");
-      break;
-    case SOCK_DGRAM:
-      SAFEPUT("Datagram ");
-      break;
-    case SOCK_SEQPACKET:
-      SAFEPUT("Seqpacket ");
-      break;
-    default:
-      SAFEPUT("Unknown type %d", info->type);
-      break;
-    }
+
+  n_used += sock_log_type(info->type, buf, buf_len);
 
   domain = info->storage.ss_family;
 
   switch(domain)
     {
     case AF_UNIX:
-      SAFEPUT("UNIX %s", info->sun.sun_path);
+      SAFEPUT("%sUNIX %s", (info->sun.sun_path[0] == '\0') ? "Abstract " : "",
+              (info->sun.sun_path[0] == '\0') ? info->sun.sun_path + 1 :
+              info->sun.sun_path);
       break;
     case AF_TIPC:
       SAFEPUT("TIPC port_type %u instance %u",
@@ -222,6 +221,16 @@ static char *socket_log_fd_info(struct fd_info *info, char *buf, size_t buf_len)
       break;
     }
   return buf;
+}
+
+char *sukat_sock_endpoint_to_str(sukat_sock_endpoint_t *endpoint, char *buf,
+                                 const size_t buf_len)
+{
+  if (endpoint && buf && buf_len)
+    {
+      return socket_log_fd_info(&endpoint->info, buf, buf_len);
+    }
+  return NULL;
 }
 
 #undef SAFEPUT
@@ -356,6 +365,7 @@ static bool socket_fill_unix(sukat_sock_t *ctx,
   if (params->punix.is_abstract)
     {
       *sun->sun_path = '\0';
+      n_used++;
     }
   snprintf(sun->sun_path + n_used, sizeof(sun->sun_path) -
            n_used - 1, "%s", params->punix.name);
@@ -462,7 +472,7 @@ static int socket_create(sukat_sock_t *ctx,
   } socks;
   struct addrinfo hints = { }, *servinfo = NULL, *p;
 
-  assert(ctx != NULL && peer != NULL);
+  assert(peer != NULL && params != NULL);
 
   memset(&socks, 0, sizeof(socks));
   LOG(ctx, "%s: Creating",
@@ -528,7 +538,10 @@ static int socket_create(sukat_sock_t *ctx,
             {
               memcpy(&info->sin, p->ai_addr, p->ai_addrlen);
             }
-          ctx->n_connections++;
+          if (ctx)
+            {
+              ctx->n_connections++;
+            }
           info->type= p->ai_socktype;
 
           LOG(ctx, "%s created", socket_log_fd_info(info, socket_buf,
@@ -615,13 +628,15 @@ static void sock_destro_close(void *main_ctx, void *client_ctx)
   if (endpoint)
     {
       uint32_t events = EPOLLIN;
+      char dbg_buf[256];
       void *caller_ctx = get_caller_ctx(ctx, endpoint);
 
       if (endpoint->closed)
         {
           return;
         }
-      LOG(ctx, "Removing endpoint %d", endpoint->info.fd);
+      LOG(ctx, "Removing endpoint %s",
+          sukat_sock_endpoint_to_str(endpoint, dbg_buf, sizeof(dbg_buf)));
       if (endpoint->epollout)
         {
           events |= EPOLLOUT;
@@ -632,8 +647,17 @@ static void sock_destro_close(void *main_ctx, void *client_ctx)
       close(endpoint->info.fd);
       if (!endpoint->destroyed)
         {
-          USE_CB(ctx, conn_cb, caller_ctx, endpoint, NULL, 0,
+          USE_CB(ctx, conn_cb, caller_ctx, endpoint,
                  SUKAT_SOCK_CONN_EVENT_DISCONNECT);
+        }
+      if (endpoint->info.saddr.sa_family == AF_UNIX &&
+          endpoint->info.sun.sun_path[0] != '\0')
+        {
+          if (unlink(endpoint->info.sun.sun_path))
+            {
+              ERR(ctx, "Failed to unlink sun socket %s",
+                  endpoint->info.sun.sun_path);
+            }
         }
       ctx->n_connections--;
     }
@@ -717,7 +741,7 @@ static ret_t server_accept_cb(sukat_sock_t *ctx,
                   LOG(ctx, "New client with fd %d", fd);
                   ctx->n_connections++;
                   USE_CB_WRET(ctx, client->endpoint_caller_ctx, conn_cb,
-                              ctx->caller_ctx, client, &saddr, slen,
+                              ctx->caller_ctx, client,
                               SUKAT_SOCK_CONN_EVENT_ACCEPTED);
                   continue;
                 }
@@ -757,7 +781,6 @@ static ret_t client_continue_connect(sukat_sock_t *ctx,
           endpoint->connect_in_progress = false;
           event_epollout(ctx, endpoint, true);
           USE_CB_WRET(ctx, new_caller_ctx, conn_cb, caller_ctx, endpoint,
-                      &(endpoint->info.storage), endpoint->info.slen,
                       SUKAT_SOCK_CONN_EVENT_CONNECT);
           if (new_caller_ctx)
             {
@@ -786,8 +809,9 @@ static bool keep_going(sukat_sock_t *ctx,
                             (client) ? &client->destro_client_ctx : NULL);
 }
 
-#define BUF_LEFT (sizeof(buf) - n_read)
-#define UNPROCESSED (n_read - processed)
+/*!
+ * Helper macro for determining if return value just implies blocking
+ */
 #define ITBLOCKS(_retval)                                                     \
   (_retval == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
 
@@ -806,12 +830,14 @@ static ret_t read_stream(sukat_sock_t *ctx, sukat_sock_endpoint_t *endpoint)
 
   while (blocked == false && disconnected == false)
     {
+#define BUF_LEFT (sizeof(buf) - n_read)
       size_t processed;
 
       do
         {
           read_now = read(endpoint->info.fd, buf + n_read, BUF_LEFT);
         } while (read_now > 0 && (n_read += read_now) < sizeof(buf));
+#undef BUF_LEFT
       if (ret_was_ok(ctx, endpoint, read_now) != true)
         {
           // If we have unprocessed stuff, read it before disconnecting.
@@ -830,6 +856,7 @@ static ret_t read_stream(sukat_sock_t *ctx, sukat_sock_endpoint_t *endpoint)
         }
 
       DBG(ctx, "Read %zu bytes from %d", n_read, endpoint->info.fd);
+#define UNPROCESSED (n_read - processed)
 
       processed = 0;
       while (UNPROCESSED && keep_going(ctx, endpoint))
@@ -887,6 +914,7 @@ static ret_t read_stream(sukat_sock_t *ctx, sukat_sock_endpoint_t *endpoint)
         {
           n_read = UNPROCESSED;
         }
+#undef UNPROCESSED
     }
 
   return (disconnected == true) ? ERR_FATAL : ERR_OK;
@@ -900,11 +928,74 @@ static ret_t read_seqpacket(sukat_sock_t *ctx, sukat_sock_endpoint_t *client)
 }
 
 static ret_t read_connectionless(sukat_sock_t *ctx,
-                                 sukat_sock_endpoint_t *client)
+                                 sukat_sock_endpoint_t *endpoint)
 {
-  ERR(ctx, "Not implemented");
-  (void)client;
-  return ERR_FATAL;
+  ssize_t ret = 0;
+  size_t buffer_size = (ctx->max_packet_size) ? ctx->max_packet_size :
+    BUFSIZ;
+  uint8_t buf[buffer_size];
+  void *caller_ctx = get_caller_ctx(ctx, endpoint);
+  sukat_sock_endpoint_t msg_from_endpoint = { };
+  struct iovec iov =
+    {
+      .iov_base = buf,
+      .iov_len = buffer_size,
+    };
+  struct msghdr hdr =
+    {
+      .msg_name = &msg_from_endpoint.info.storage,
+      .msg_namelen = sizeof(msg_from_endpoint.info.storage),
+      .msg_iov = &iov,
+      .msg_iovlen = 1,
+      // Silly g++ doesn't like these.
+      .msg_control = NULL,
+      .msg_controllen = 0,
+      .msg_flags = 0,
+    };
+  char dbg_buf[256];
+
+  assert(ctx != NULL && endpoint != NULL && endpoint->info.fd >= 0);
+
+  // Nor these.
+  msg_from_endpoint.info.type = endpoint->info.type;
+  msg_from_endpoint.info.fd = -1;
+  msg_from_endpoint.stack_dummy = true;
+
+  do
+    {
+      hdr.msg_flags = 0;
+
+      ret = recvmsg(endpoint->info.fd, &hdr, 0);
+      if (ret > 0)
+        {
+          DBG(ctx, "Received %zu byte message from %s", ret,
+              sukat_sock_endpoint_to_str(&msg_from_endpoint, dbg_buf,
+                                         sizeof(dbg_buf)));
+          msg_from_endpoint.info.slen = hdr.msg_namelen;
+          if (hdr.msg_flags & MSG_TRUNC)
+            {
+              LOG(ctx, "%zd bytes of Truncated message received", ret);
+            }
+          if (ctx->cbs.msg_cb)
+            {
+              ctx->cbs.msg_cb(caller_ctx, &msg_from_endpoint, buf,
+                              ret);
+            }
+          else
+            {
+              ERR(ctx, "Message received, but no msg_cb given");
+            }
+        }
+      else if (!(ITBLOCKS(ret)))
+        {
+          ERR(ctx, "%s while reading from connectionless socket%s%s",
+              (ret == 0) ? "Disconnected" : "Error",
+              (ret == -1) ? ": " : "", (ret == -1) ? strerror(errno) : "");
+          return ERR_FATAL;
+        }
+    } while (ret > 0);
+
+  return ERR_OK;
 }
 
 /*!
@@ -1127,6 +1218,7 @@ sukat_sock_t *sukat_sock_create(struct sukat_sock_params *params,
   ctx->epoll_fd = ctx->master_epoll_fd = -1;
   ctx->caller_ctx = params->caller_ctx;
   ctx->epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+  ctx->max_packet_size = params->max_packet_size;
   if (ctx->epoll_fd < 0) {
       ERR(ctx, "Failed to create epoll fd: %s", strerror(errno));
       goto fail;
@@ -1218,7 +1310,6 @@ sukat_sock_endpoint_t
                       destro_cb_enter(ctx->destro_ctx);
                       USE_CB_WRET(ctx, new_caller_ctx, conn_cb,
                                   ctx->caller_ctx, endpoint,
-                                  &endpoint->info.storage, endpoint->info.slen,
                                   SUKAT_SOCK_CONN_EVENT_CONNECT);
                       destroyed_in_between =
                         destro_is_deleted(ctx->destro_ctx, NULL);
@@ -1311,16 +1402,92 @@ static enum sukat_sock_send_return send_stream_msg(sukat_sock_t *ctx,
   return SUKAT_SEND_ERROR;
 }
 
+static bool sock_endpoint_to_client(sukat_sock_t *ctx,
+                                    sukat_sock_endpoint_t *client,
+                                    sukat_sock_endpoint_t *to_fill)
+{
+  struct addrinfo info = { };
+
+  assert(client && to_fill);
+  info.ai_family = client->info.storage.ss_family;
+  info.ai_socktype = client->info.type ;
+  info.ai_addrlen = client->info.slen;
+  info.ai_addr = &client->info.saddr;
+  to_fill->info.slen = client->info.slen;
+  to_fill->info.type = client->info.type;
+  memcpy(&to_fill->info.storage, &client->info.storage,
+         client->info.slen);
+  to_fill->info.fd = socket_create_hinted(ctx, &info, to_fill, 0);
+  if (to_fill->info.fd < 0)
+    {
+      char endpoint_str[256];
+
+      ERR(ctx, "Failed to create socket to %s",
+          sukat_sock_endpoint_to_str(client, endpoint_str,
+                                     sizeof(endpoint_str)));
+      return false;
+    }
+  return true;
+}
+
+static enum sukat_sock_send_return sock_sendto(sukat_sock_t *ctx,
+                                               int fd, uint8_t *msg,
+                                               size_t msg_len,
+                                               sukat_sock_endpoint_t *client)
+{
+  char endpoint_str[256];
+  ssize_t ret;
+
+  DBG(ctx, "Sending %u byte to %s", msg_len,
+      sukat_sock_endpoint_to_str(client, endpoint_str, sizeof(endpoint_str)));
+
+  ret = sendto(fd, msg, msg_len, 0, &client->info.saddr, client->info.slen);
+  if (ret <= 0)
+    {
+      if (!ITBLOCKS(ret))
+        {
+          ERR(ctx, "Failed to send %u byte message to %s: %s",
+              msg_len, sukat_sock_endpoint_to_str(client, endpoint_str,
+                                                  sizeof(endpoint_str)),
+              (ret == 0) ? "Disconnected" : strerror(errno));
+          return SUKAT_SEND_ERROR;
+        }
+      return SUKAT_SEND_EAGAIN;
+    }
+  else if ((size_t)ret != msg_len)
+    {
+      ERR(ctx, "Sent only %zu bytes of full %u byte message", ret, msg_len);
+    }
+
+  return SUKAT_SEND_OK;
+}
+
 static enum sukat_sock_send_return send_dgram_msg(sukat_sock_t *ctx,
                                                   sukat_sock_endpoint_t *client,
-                                                  uint8_t *msg, size_t msg_len)
+                                                  uint8_t *msg, size_t msg_len,
+                                                  sukat_sock_endpoint_t *source)
 {
-  //TODO.
-  (void)ctx;
-  (void)client;
-  (void)msg;
-  (void)msg_len;
-  return SUKAT_SEND_ERROR;
+  enum sukat_sock_send_return retval;
+  sukat_sock_endpoint_t on_the_fly = { };
+
+  on_the_fly.info.fd = -1;
+
+  assert(client && msg && msg_len);
+  if (!source)
+    {
+      if (!sock_endpoint_to_client(ctx, client, &on_the_fly))
+        {
+          return SUKAT_SEND_ERROR;
+        }
+      source = &on_the_fly;
+    }
+
+  retval = sock_sendto(ctx, source->info.fd, msg, msg_len, client);
+  if (on_the_fly.info.fd != -1)
+    {
+      close(on_the_fly.info.fd);
+    }
+  return retval;
 }
 
 static enum sukat_sock_send_return send_seqm_msg(sukat_sock_t *ctx,
@@ -1335,15 +1502,19 @@ static enum sukat_sock_send_return send_seqm_msg(sukat_sock_t *ctx,
   return SUKAT_SEND_ERROR;
 }
 
+#undef ITBLOCKS
+
 enum sukat_sock_send_return sukat_send_msg(sukat_sock_t *ctx,
                                            sukat_sock_endpoint_t *peer,
-                                           uint8_t *msg, size_t msg_len)
+                                           uint8_t *msg, size_t msg_len,
+                                           sukat_sock_endpoint_t *source)
 {
   enum sukat_sock_send_return ret = SUKAT_SEND_OK;
 
-  if (!ctx || !peer)
+  if (!ctx || !peer || !msg || !msg_len)
     {
-      ERR(ctx, "No peer given to send");
+      ERR(ctx, "Invalid parameters to send: ctx: %p peer: %p msg: %p "
+          "msg_len: %u", ctx, peer, msg, msg_len);
       return SUKAT_SEND_ERROR;
     }
   if (peer->connect_in_progress)
@@ -1360,13 +1531,18 @@ enum sukat_sock_send_return sukat_send_msg(sukat_sock_t *ctx,
     }
   if (socket_connection_oriented(peer->info.type))
     {
+      if (source)
+        {
+          ERR(ctx, "Source given for connection oriented send");
+          // I guess its okay to send anyway.
+        }
       if (peer->info.type == SOCK_STREAM)
         {
           return send_stream_msg(ctx, peer, msg, msg_len);
         }
       return send_seqm_msg(ctx, peer, msg, msg_len);
     }
-  return send_dgram_msg(ctx, peer, msg, msg_len);
+  return send_dgram_msg(ctx, peer, msg, msg_len, source);
 }
 
 void sukat_sock_disconnect(sukat_sock_t *ctx, sukat_sock_endpoint_t *peer)
