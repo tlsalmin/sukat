@@ -920,66 +920,46 @@ static ret_t read_stream(sukat_sock_t *ctx, sukat_sock_endpoint_t *endpoint)
   return (disconnected == true) ? ERR_FATAL : ERR_OK;
 }
 
-static ret_t read_seqpacket(sukat_sock_t *ctx, sukat_sock_endpoint_t *client)
-{
-  ERR(ctx, "Not implemented");
-  (void)client;
-  return ERR_FATAL;
-}
-
-static ret_t read_connectionless(sukat_sock_t *ctx,
-                                 sukat_sock_endpoint_t *endpoint)
+static ret_t sock_dgram_loop(sukat_sock_t *ctx, int fd,
+                             sukat_sock_endpoint_t *peer, struct msghdr *hdr,
+                             void *caller_ctx)
 {
   ssize_t ret = 0;
   size_t buffer_size = (ctx->max_packet_size) ? ctx->max_packet_size :
     BUFSIZ;
   uint8_t buf[buffer_size];
-  void *caller_ctx = get_caller_ctx(ctx, endpoint);
-  sukat_sock_endpoint_t msg_from_endpoint = { };
+  char dbg_buf[256];
   struct iovec iov =
     {
       .iov_base = buf,
       .iov_len = buffer_size,
     };
-  struct msghdr hdr =
-    {
-      .msg_name = &msg_from_endpoint.info.storage,
-      .msg_namelen = sizeof(msg_from_endpoint.info.storage),
-      .msg_iov = &iov,
-      .msg_iovlen = 1,
-      // Silly g++ doesn't like these.
-      .msg_control = NULL,
-      .msg_controllen = 0,
-      .msg_flags = 0,
-    };
-  char dbg_buf[256];
 
-  assert(ctx != NULL && endpoint != NULL && endpoint->info.fd >= 0);
+  assert(ctx && peer && hdr);
 
-  // Nor these.
-  msg_from_endpoint.info.type = endpoint->info.type;
-  msg_from_endpoint.info.fd = -1;
-  msg_from_endpoint.stack_dummy = true;
+  hdr->msg_iov = &iov;
+  hdr->msg_iovlen = 1;
 
   do
     {
-      hdr.msg_flags = 0;
+      hdr->msg_flags = 0;
 
-      ret = recvmsg(endpoint->info.fd, &hdr, 0);
+      ret = recvmsg(fd, hdr, 0);
       if (ret > 0)
         {
           DBG(ctx, "Received %zu byte message from %s", ret,
-              sukat_sock_endpoint_to_str(&msg_from_endpoint, dbg_buf,
-                                         sizeof(dbg_buf)));
-          msg_from_endpoint.info.slen = hdr.msg_namelen;
-          if (hdr.msg_flags & MSG_TRUNC)
+              sukat_sock_endpoint_to_str(peer, dbg_buf, sizeof(dbg_buf)));
+          if (hdr->msg_name && hdr->msg_namelen)
+            {
+              peer->info.slen = hdr->msg_namelen;
+            }
+          if (hdr->msg_flags & MSG_TRUNC)
             {
               LOG(ctx, "%zd bytes of Truncated message received", ret);
             }
           if (ctx->cbs.msg_cb)
             {
-              ctx->cbs.msg_cb(caller_ctx, &msg_from_endpoint, buf,
-                              ret);
+              ctx->cbs.msg_cb(caller_ctx, peer, buf, ret);
             }
           else
             {
@@ -988,7 +968,7 @@ static ret_t read_connectionless(sukat_sock_t *ctx,
         }
       else if (!(ITBLOCKS(ret)))
         {
-          ERR(ctx, "%s while reading from connectionless socket%s%s",
+          ERR(ctx, "%s while reading from socket%s%s",
               (ret == 0) ? "Disconnected" : "Error",
               (ret == -1) ? ": " : "", (ret == -1) ? strerror(errno) : "");
           return ERR_FATAL;
@@ -996,6 +976,37 @@ static ret_t read_connectionless(sukat_sock_t *ctx,
     } while (ret > 0);
 
   return ERR_OK;
+}
+
+static ret_t read_seqpacket(sukat_sock_t *ctx, sukat_sock_endpoint_t *client)
+{
+  struct msghdr hdr = { };
+
+  assert(ctx && client);
+
+  return sock_dgram_loop(ctx, client->info.fd, client, &hdr,
+                         get_caller_ctx(ctx, client));
+}
+
+static ret_t read_connectionless(sukat_sock_t *ctx,
+                                 sukat_sock_endpoint_t *endpoint)
+{
+  void *caller_ctx = get_caller_ctx(ctx, endpoint);
+  // Make a temporary end-point for connectionless.
+  sukat_sock_endpoint_t msg_from_endpoint = { };
+  struct msghdr hdr = { };
+
+  assert(ctx != NULL && endpoint != NULL && endpoint->info.fd >= 0);
+
+  hdr.msg_name = &msg_from_endpoint.info.storage;
+  hdr.msg_namelen = sizeof(msg_from_endpoint.info.storage);
+
+  msg_from_endpoint.info.type = endpoint->info.type;
+  msg_from_endpoint.info.fd = -1;
+  msg_from_endpoint.stack_dummy = true;
+
+  return sock_dgram_loop(ctx, endpoint->info.fd, &msg_from_endpoint, &hdr,
+                         caller_ctx);
 }
 
 /*!
@@ -1430,25 +1441,26 @@ static bool sock_endpoint_to_client(sukat_sock_t *ctx,
   return true;
 }
 
-static enum sukat_sock_send_return sock_sendto(sukat_sock_t *ctx,
-                                               int fd, uint8_t *msg,
-                                               size_t msg_len,
-                                               sukat_sock_endpoint_t *client)
+static enum sukat_sock_send_return
+  sock_send_dgram(sukat_sock_t *ctx, int fd, uint8_t *msg, size_t msg_len,
+                  struct msghdr *hdr)
 {
-  char endpoint_str[256];
   ssize_t ret;
+  struct iovec iov =
+    {
+      .iov_base = msg,
+      .iov_len = msg_len
+    };
 
-  DBG(ctx, "Sending %u byte to %s", msg_len,
-      sukat_sock_endpoint_to_str(client, endpoint_str, sizeof(endpoint_str)));
+  hdr->msg_iov = &iov;
+  hdr->msg_iovlen = 1;
 
-  ret = sendto(fd, msg, msg_len, 0, &client->info.saddr, client->info.slen);
+  ret = sendmsg(fd, hdr, 0);
   if (ret <= 0)
     {
       if (!ITBLOCKS(ret))
         {
-          ERR(ctx, "Failed to send %u byte message to %s: %s",
-              msg_len, sukat_sock_endpoint_to_str(client, endpoint_str,
-                                                  sizeof(endpoint_str)),
+          ERR(ctx, "Failed to send %u byte message: %s", msg_len,
               (ret == 0) ? "Disconnected" : strerror(errno));
           return SUKAT_SEND_ERROR;
         }
@@ -1469,6 +1481,8 @@ static enum sukat_sock_send_return send_dgram_msg(sukat_sock_t *ctx,
 {
   enum sukat_sock_send_return retval;
   sukat_sock_endpoint_t on_the_fly = { };
+  struct msghdr hdr = { };
+  char endpoint_str[256];
 
   on_the_fly.info.fd = -1;
 
@@ -1481,8 +1495,13 @@ static enum sukat_sock_send_return send_dgram_msg(sukat_sock_t *ctx,
         }
       source = &on_the_fly;
     }
+  hdr.msg_namelen = client->info.slen;
+  hdr.msg_name = &client->info.storage;
 
-  retval = sock_sendto(ctx, source->info.fd, msg, msg_len, client);
+  DBG(ctx, "Sending %u byte to %s", msg_len,
+      sukat_sock_endpoint_to_str(client, endpoint_str, sizeof(endpoint_str)));
+
+  retval = sock_send_dgram(ctx, source->info.fd, msg, msg_len, &hdr);
   if (on_the_fly.info.fd != -1)
     {
       close(on_the_fly.info.fd);
@@ -1494,12 +1513,15 @@ static enum sukat_sock_send_return send_seqm_msg(sukat_sock_t *ctx,
                                                  sukat_sock_endpoint_t *client,
                                                  uint8_t *msg, size_t msg_len)
 {
-  //TODO.
-  (void)ctx;
-  (void)client;
-  (void)msg;
-  (void)msg_len;
-  return SUKAT_SEND_ERROR;
+  struct msghdr hdr = { };
+  char endpoint_str[256];
+
+  assert(ctx && client && msg && msg_len);
+
+  DBG(ctx, "Sending %u byte to %s", msg_len,
+      sukat_sock_endpoint_to_str(client, endpoint_str, sizeof(endpoint_str)));
+
+  return sock_send_dgram(ctx, client->info.fd, msg, msg_len, &hdr);
 }
 
 #undef ITBLOCKS

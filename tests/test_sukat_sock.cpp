@@ -704,6 +704,10 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_read)
   sukat_sock_destroy(server);
 }
 
+TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_seqpacket)
+{
+}
+
 class sukat_sock_test_sun_dgram : public ::testing::Test
 {
 protected:
@@ -810,6 +814,7 @@ TEST_F(sukat_sock_test_sun_dgram, sukat_sock_test_sun_dgram_send)
   int ret;
 
   tctx.buf = (uint8_t *)buf;
+  tctx.compare_payload = true;
 
   server2 = sukat_sock_create(&default_params, &default_cbs);
   EXPECT_NE(nullptr, server2);
@@ -838,11 +843,28 @@ TEST_F(sukat_sock_test_sun_dgram, sukat_sock_test_sun_dgram_send)
   ASSERT_EQ(true, tctx.msg_cb_visited);
   server2_from_server1 = tctx.newest_client;
   tctx.msg_cb_visited = tctx.copy_client = false;
+  tctx.offset = 0;
 
   snprintf(buf, sizeof(buf), "Hey back from server1");
   sock_ret = sukat_send_msg(server, server2_from_server1, (uint8_t *)buf,
                             strlen(buf), server_endpoint);
   EXPECT_EQ(SUKAT_SEND_OK, sock_ret);
+
+  ret = sukat_sock_read(server2, 100);
+  EXPECT_EQ(0, ret);
+  EXPECT_EQ(true, tctx.msg_cb_visited);
+  tctx.offset = 0;
+  tctx.msg_cb_visited = false;
+
+  // Send one without a source.
+  snprintf(buf, sizeof(buf), "Hey from secret admirer");
+  sock_ret = sukat_send_msg(server, server2_from_server1, (uint8_t *)buf,
+                            strlen(buf), NULL);
+  EXPECT_EQ(SUKAT_SEND_OK, sock_ret);
+
+  ret = sukat_sock_read(server2, 100);
+  EXPECT_EQ(0, ret);
+  EXPECT_EQ(true, tctx.msg_cb_visited);
 
   sukat_sock_disconnect(server2, server2_endpoint);
   sukat_sock_disconnect(server2, server1_from_server2);
