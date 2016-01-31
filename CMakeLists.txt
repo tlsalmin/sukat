@@ -4,7 +4,7 @@ project(sukat)
 add_subdirectory(src)
 include_directories(include)
 
-add_subdirectory(demo)
+add_subdirectory(tools)
 
 set (SUKAT_LIBS ${SUKAT_LIBS} sukat)
 option(test "Build all tests." OFF)

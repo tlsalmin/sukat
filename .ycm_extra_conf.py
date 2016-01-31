@@ -62,6 +62,8 @@ flags = [
 '-I',
 'include',
 '-I',
+'tools',
+'-I',
 'src',
 '/System/Library/Frameworks/Python.framework/Headers',
 '-isystem',
