@@ -706,6 +706,64 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_read)
 
 TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_seqpacket)
 {
+  sukat_sock_t *server, *client;
+  sukat_sock_endpoint_t *server_endpoint, *server_from_client,
+                        *client_from_server;
+  struct read_ctx tctx = { };
+  int err;
+  char buf[BUFSIZ];
+  enum sukat_sock_send_return send_ret;
+
+  default_endpoint_params.type = SOCK_SEQPACKET;
+  default_cbs.msg_len_cb = len_cb;
+  default_cbs.conn_cb = new_conn_cb_for_read;
+  default_cbs.msg_cb = msg_cb;
+  default_endpoint_params.server = true;
+  default_params.caller_ctx = (void *)&tctx;
+
+  server = sukat_sock_create(&default_params, &default_cbs);
+  EXPECT_NE(nullptr, server);
+  server_endpoint = sukat_sock_endpoint_add(server, &default_endpoint_params);
+  EXPECT_NE(nullptr, server_endpoint);
+
+  default_endpoint_params.server = false;
+  client = sukat_sock_create(&default_params, &default_cbs);
+  EXPECT_NE(nullptr, client);
+  server_from_client = sukat_sock_endpoint_add(client,
+                                               &default_endpoint_params);
+  EXPECT_NE(nullptr, client);
+
+  // Accept client
+  err = sukat_sock_read(server, 100);
+  EXPECT_EQ(0, err);
+  EXPECT_NE(nullptr, tctx.newest_client);
+  client_from_server = tctx.newest_client;
+
+  snprintf(buf, sizeof(buf), "Hello there new seqpacket client");
+  send_ret = sukat_send_msg(server, client_from_server,
+                            (uint8_t *)buf, strlen(buf), NULL);
+  EXPECT_EQ(SUKAT_SEND_OK, send_ret);
+
+  tctx.buf = (uint8_t *)buf;
+  tctx.compare_payload = tctx.msg_cb_should_visit = true;
+  err = sukat_sock_read(client, 100);
+  EXPECT_EQ(true, tctx.msg_cb_visited);
+  tctx.msg_cb_visited = false;
+  tctx.offset = 0;
+
+  snprintf(buf, sizeof(buf), "Hello there seqpacket server");
+  send_ret = sukat_send_msg(client, server_from_client, (uint8_t *)buf,
+                            strlen(buf), NULL);
+  EXPECT_EQ(SUKAT_SEND_OK, send_ret);
+
+  err = sukat_sock_read(server, 100);
+  EXPECT_EQ(true, tctx.msg_cb_visited);
+
+  sukat_sock_disconnect(client, client_from_server);
+  sukat_sock_disconnect(client, server_from_client);
+  sukat_sock_disconnect(server, server_endpoint);
+  sukat_sock_destroy(client);
+  sukat_sock_destroy(server);
 }
 
 class sukat_sock_test_sun_dgram : public ::testing::Test
