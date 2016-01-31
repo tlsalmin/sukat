@@ -6,6 +6,7 @@
  * @{
  *
  */
+#include <fcntl.h>
 
 #include "sukat_util.h"
 
@@ -33,6 +34,30 @@ void sukat_util_usage(const struct option *opts, const char **explanations,
                   optstring, explanations[i]);
         }
     }
+}
+
+int sukat_util_flagit(int fd)
+{
+  int flags;
+
+  flags = fcntl(fd, F_GETFL, 0);
+  if (flags >= 0)
+    {
+      flags |= O_NONBLOCK;
+      if (fcntl(fd, F_SETFL, flags) == 0)
+        {
+          flags = fcntl(fd, F_GETFD, 0);
+          if (flags >= 0)
+            {
+              flags |= FD_CLOEXEC;
+              if (fcntl(fd, F_SETFD, flags) == 0)
+                {
+                  return 0;
+                }
+            }
+        }
+    }
+  return -1;
 }
 
 /*! @} */

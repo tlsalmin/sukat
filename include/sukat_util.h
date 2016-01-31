@@ -28,6 +28,16 @@
 void sukat_util_usage(const struct option *opts, const char **explanations,
                       FILE *output);
 
+/*!
+ * @brief Set flags O_NONBLOCK and FD_CLOEXEC on the fd.
+ *
+ * @param fd    FD to modify.
+ *
+ * @return 0    Success.
+ * @return < 0  Error.
+ */
+int sukat_util_flagit(int fd);
+
 #endif /* SUKAT_UTIL_H */
 
 /*! @} */

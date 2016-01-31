@@ -26,6 +26,7 @@
 #include <netdb.h>
 #include <arpa/inet.h>
 
+#include "sukat_util.h"
 #include "sukat_sock.h"
 #include "sukat_log_internal.h"
 #include "sukat_drawer.h"
@@ -304,24 +305,9 @@ static void uncache(__attribute__((unused)) sukat_sock_t *ctx,
  */
 static bool set_flags(sukat_sock_t *ctx, int fd)
 {
-  int flags;
-
-  flags = fcntl(fd, F_GETFL, 0);
-  if (flags >= 0)
+  if (!sukat_util_flagit(fd))
     {
-      flags |= O_NONBLOCK;
-      if (fcntl(fd, F_SETFL, flags) == 0)
-        {
-          flags = fcntl(fd, F_GETFD, 0);
-          if (flags >= 0)
-            {
-              flags |= FD_CLOEXEC;
-              if (fcntl(fd, F_SETFD, flags) == 0)
-                {
-                  return true;
-                }
-            }
-        }
+      return true;
     }
   ERR(ctx, "Failed to set flags to fd %d: %s", fd, strerror(errno));
   return false;
@@ -1524,6 +1510,63 @@ static enum sukat_sock_send_return send_seqm_msg(sukat_sock_t *ctx,
   return sock_send_dgram(ctx, client->info.fd, msg, msg_len, &hdr);
 }
 
+static enum sukat_sock_send_return
+  sock_splice_intermediary(sukat_sock_t *ctx, int fd_in, int fd_out,
+                           int *inter_pipes)
+{
+  ssize_t ret;
+#define SPLICE_FLAGS (SPLICE_F_MOVE | SPLICE_F_MORE | SPLICE_F_NONBLOCK)
+
+  do
+    {
+      ret = splice(fd_in, NULL, inter_pipes[1], NULL, 512, SPLICE_FLAGS);
+      DBG(ctx, "Splice returned %zd from fd %d", ret, fd_in);
+      if (ret > 0 || ITBLOCKS(ret))
+        {
+          ret =
+            splice(inter_pipes[0], NULL, fd_out, NULL, 512, SPLICE_FLAGS);
+          DBG(ctx, "Splice other side returned %zd to fd %d", ret, fd_out);
+        }
+    } while (ret > 0);
+  if (!ITBLOCKS(ret))
+    {
+      ERR(ctx, "Failed to splice data: %s",
+          (ret == 0) ? "Disconnected" : strerror(errno));
+      return SUKAT_SEND_ERROR;
+    }
+  return SUKAT_SEND_OK;
+}
+
+static enum sukat_sock_send_return sock_splice(sukat_sock_t *ctx,
+                                               int fd_in, int fd_out,
+                                               int *inter_pipes)
+{
+
+  if (inter_pipes)
+    {
+      return sock_splice_intermediary(ctx, fd_in, fd_out, inter_pipes);
+    }
+  else
+    {
+      ssize_t ret;
+
+      do
+        {
+          ret = splice(fd_in, NULL, fd_out, NULL, 512, SPLICE_FLAGS);
+        }
+      while (ret > 0);
+      if (!ITBLOCKS(ret))
+        {
+          ERR(ctx, "Failed to splice data: %s",
+              (ret == 0) ? "Disconnected" : strerror(errno));
+          return SUKAT_SEND_ERROR;
+        }
+    }
+
+  return SUKAT_SEND_OK;
+}
+
+#undef SPLICE_FLAGS
 #undef ITBLOCKS
 
 enum sukat_sock_send_return sukat_send_msg(sukat_sock_t *ctx,
@@ -1621,6 +1664,33 @@ char *sukat_sock_stringify_peer(struct sockaddr_storage *saddr, size_t sock_len,
 int get_domain(sukat_sock_endpoint_t *endpoint)
 {
   return endpoint->info.storage.ss_family;
+}
+
+enum sukat_sock_send_return
+  sukat_sock_splice_to(sukat_sock_t *ctx, sukat_sock_endpoint_t *endpoint,
+                       int fd_in, int *inter_pipes,
+                       __attribute__((unused)) sukat_sock_endpoint_t *source)
+{
+  if (!ctx || !endpoint || fd_in < 0)
+    {
+      ERR(ctx, "Invalid argument to splicing: ctx: %p endpoint %p fd %d",
+          ctx, endpoint, fd_in);
+      return SUKAT_SEND_ERROR;
+    }
+  return sock_splice(ctx, fd_in, endpoint->info.fd, inter_pipes);
+}
+
+enum sukat_sock_send_return
+  sukat_sock_splice_from(sukat_sock_t *ctx, sukat_sock_endpoint_t *endpoint,
+                       int fd_out, int *inter_pipes)
+{
+  if (!ctx || !endpoint || fd_out < 0)
+    {
+      ERR(ctx, "Invalid argument to splicing: ctx: %p endpoint %p fd %d",
+          ctx, endpoint, fd_out);
+      return SUKAT_SEND_ERROR;
+    }
+  return sock_splice(ctx, endpoint->info.fd, fd_out, inter_pipes);
 }
 
 uint16_t sukat_sock_get_port(sukat_sock_endpoint_t *endpoint)

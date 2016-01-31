@@ -6,7 +6,6 @@
 #include <assert.h>
 #include <getopt.h>
 #include <stdlib.h>
-#include <signal.h>
 #include <stdio.h>
 #include <errno.h>
 #include <stdint.h>
@@ -14,6 +13,7 @@
 #include "sukat_bgp.h"
 #include "sukat_util.h"
 #include "tools_log.h"
+#include "tools_common.h"
 #include <arpa/inet.h>
 #include <netinet/in.h>
 
@@ -202,19 +202,6 @@ static void notification_cb(__attribute__((unused)) void *ctx,
     }
 }
 
-static int safe_unsigned(char *value_in_ascii, long long int max_size)
-{
-  int val = atoi(value_in_ascii);
-
-  if (val < 0 || val > max_size)
-    {
-      ERR("Too big or negative argument %s", value_in_ascii);
-      exit(EXIT_FAILURE);
-    }
-
-  return val;
-}
-
 static bool parse_opts(struct bgp_query_ctx *ctx, int argc, char **argv)
 {
   const struct option options[] =
@@ -283,12 +270,6 @@ fail:
   return false;
 }
 
-static void sighandler(int siggie)
-{
-  LOG("Received signal %d", siggie);
-  keep_running = false;
-}
-
 int main(int argc, char **argv)
 {
   int exit_val = EXIT_FAILURE;
@@ -343,12 +324,7 @@ int main(int argc, char **argv)
               (peer = sukat_bgp_peer_add(bgp_ctx, &peer_inet)) != NULL)
             {
               keep_running = true;
-              struct sigaction old_action, new_action =
-                {
-                  .sa_handler = sighandler,
-                };
-
-              if (!sigaction(SIGINT, &new_action, &old_action))
+              if (simple_sighandler() == true)
                 {
                   exit_val = EXIT_SUCCESS;
 
@@ -360,11 +336,6 @@ int main(int argc, char **argv)
                         {
                           keep_running = false;
                         }
-                    }
-                  if (sigaction(SIGINT, &old_action, NULL))
-                    {
-                      ERR("Failed to restore signal handler: %s",
-                          strerror(errno));
                     }
                 }
               else

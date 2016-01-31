@@ -1425,3 +1425,100 @@ TEST_F(sukat_sock_test_inet, sukat_sock_test_ipv6)
   sukat_sock_disconnect(server, server_endpoint);
   sukat_sock_destroy(server);
 }
+
+class sukat_sock_test_inet_stream_server : public ::testing::Test
+{
+protected:
+
+  sukat_sock_test_inet_stream_server() {
+  }
+
+  virtual ~sukat_sock_test_inet_stream_server() {
+  }
+
+  virtual void SetUp() {
+      memset(&default_cbs, 0, sizeof(default_cbs));
+      memset(&default_params, 0, sizeof(default_params));
+      memset(&default_endpoint_params, 0, sizeof(default_endpoint_params));
+
+      default_cbs.log_cb = test_log_cb;
+
+      default_endpoint_params.domain = AF_UNSPEC;
+      default_endpoint_params.type = SOCK_STREAM;
+      default_endpoint_params.server = true;
+      default_endpoint_params.pinet.port = portbuf;
+      snprintf(portbuf, sizeof(portbuf), "%hu", (unsigned short)0);
+
+      server = sukat_sock_create(&default_params, &default_cbs);
+      EXPECT_NE(nullptr, server);
+      endpoint = sukat_sock_endpoint_add(server, &default_endpoint_params);
+      EXPECT_NE(nullptr, endpoint);
+
+      EXPECT_NE(0, sukat_sock_get_port(endpoint));
+      snprintf(portbuf, sizeof(portbuf), "%hu",
+               sukat_sock_get_port(endpoint));
+      default_endpoint_params.server = false;
+  }
+
+  virtual void TearDown() {
+      sukat_sock_disconnect(server, endpoint);
+      sukat_sock_destroy(server);
+  }
+
+  struct sukat_sock_cbs default_cbs;
+  struct sukat_sock_params default_params;
+  struct sukat_sock_endpoint_params default_endpoint_params;
+  sukat_sock_t *server;
+  sukat_sock_endpoint_t *endpoint;
+  char portbuf[strlen("65535") + 1];
+};
+
+struct failed_conn_ctx
+{
+  sukat_sock_endpoint_t *endpoint;
+  unsigned int should_visit:1;
+  unsigned int visited:1;
+  unsigned int unused:6;
+};
+
+void *failed_conn_cb(void *caller_ctx, sukat_sock_endpoint_t *endpoint,
+                     enum sukat_sock_new_conn_event event)
+{
+  EXPECT_NE(nullptr, caller_ctx);
+  if (caller_ctx)
+    {
+      struct failed_conn_ctx *conn_ctx = (struct failed_conn_ctx *)caller_ctx;
+
+      EXPECT_EQ(true, conn_ctx->should_visit);
+      EXPECT_EQ(SUKAT_SOCK_CONN_EVENT_DISCONNECT, event);
+      EXPECT_EQ(conn_ctx->endpoint, endpoint);
+      conn_ctx->endpoint = NULL;
+      conn_ctx->visited = true;
+    }
+  return NULL;
+}
+
+TEST_F(sukat_sock_test_inet_stream_server, sukat_sock_test_failed_conn)
+{
+  sukat_sock_t *client;
+  struct failed_conn_ctx conn_ctx = { };
+  int err;
+
+  default_params.caller_ctx = &conn_ctx;
+  default_cbs.conn_cb = failed_conn_cb;
+
+  client = sukat_sock_create(&default_params, &default_cbs);
+  EXPECT_NE(nullptr, client);
+  conn_ctx.endpoint = sukat_sock_endpoint_add(client, &default_endpoint_params);
+  EXPECT_NE(nullptr, conn_ctx.endpoint);
+
+  sukat_sock_disconnect(server, endpoint);
+  endpoint = NULL;
+  conn_ctx.should_visit = true;
+  err = sukat_sock_read(client, 100);
+  EXPECT_EQ(0, err);
+  EXPECT_EQ(true, conn_ctx.visited);
+  EXPECT_EQ(nullptr, conn_ctx.endpoint);
+
+  sukat_sock_destroy(client);
+}

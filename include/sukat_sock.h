@@ -284,6 +284,27 @@ enum sukat_sock_send_return sukat_send_msg(sukat_sock_t *ctx,
                                            sukat_sock_endpoint_t *source);
 
 /*!
+ * @brief Splice data from \p source_fd to \p endpoint.
+ *
+ * @param ctx           Sukat API context.
+ * @param endpoint      Target to where data is spliced.
+ * @param source_fd     fd_in for splicing.
+ * @param inter_pipes   Intermediary pipes if neither fd is a pipe.
+ * @param source        Alternative source endpoint for non-connection oriented
+ *                      sockets.
+ *
+ * @return ::sukat_sock_send_return
+ */
+enum sukat_sock_send_return
+  sukat_sock_splice_to(sukat_sock_t *ctx, sukat_sock_endpoint_t *endpoint,
+                       int fd_in, int *inter_pipes,
+                       sukat_sock_endpoint_t *source);
+
+enum sukat_sock_send_return
+  sukat_sock_splice_from(sukat_sock_t *ctx, sukat_sock_endpoint_t *endpoint,
+                       int fd_out, int *inter_pipes);
+
+/*!
  * Converts the peer information \p endpoint into a human readable format to
  * \p buf.
  *
