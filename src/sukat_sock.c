@@ -18,6 +18,7 @@
 #include <sys/socket.h>
 #include <errno.h>
 #include <linux/tipc.h>
+#include <limits.h>
 #include <sys/un.h>
 #include <assert.h>
 #include <netinet/in.h>
@@ -1519,12 +1520,12 @@ static enum sukat_sock_send_return
 
   do
     {
-      ret = splice(fd_in, NULL, inter_pipes[1], NULL, 512, SPLICE_FLAGS);
+      ret = splice(fd_in, NULL, inter_pipes[1], NULL, INT_MAX, SPLICE_FLAGS);
       DBG(ctx, "Splice returned %zd from fd %d", ret, fd_in);
       if (ret > 0 || ITBLOCKS(ret))
         {
           ret =
-            splice(inter_pipes[0], NULL, fd_out, NULL, 512, SPLICE_FLAGS);
+            splice(inter_pipes[0], NULL, fd_out, NULL, INT_MAX, SPLICE_FLAGS);
           DBG(ctx, "Splice other side returned %zd to fd %d", ret, fd_out);
         }
     } while (ret > 0);
@@ -1552,7 +1553,7 @@ static enum sukat_sock_send_return sock_splice(sukat_sock_t *ctx,
 
       do
         {
-          ret = splice(fd_in, NULL, fd_out, NULL, 512, SPLICE_FLAGS);
+          ret = splice(fd_in, NULL, fd_out, NULL, INT_MAX, SPLICE_FLAGS);
         }
       while (ret > 0);
       if (!ITBLOCKS(ret))

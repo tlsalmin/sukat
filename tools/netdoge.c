@@ -23,10 +23,15 @@ struct netdoge_ctx
   sukat_sock_t *sock_ctx;
   sukat_sock_endpoint_t *target;
   sukat_sock_endpoint_t *source;
-  bool connected;
-  int epoll_fd;
+    int epoll_fd;
   int send_pipes[2];
   int read_pipes[2];
+  sukat_sock_endpoint_t *client;
+  struct
+    {
+      unsigned int connected:1;
+      unsigned int unused:7;
+    };
   struct sukat_sock_endpoint_params target_params;
 };
 
@@ -207,7 +212,7 @@ static bool create_temp_endpoint(struct netdoge_ctx *doge_ctx)
 }
 
 static void *conn_cb(void *caller_ctx,
-                     __attribute__((unused)) sukat_sock_endpoint_t *endpoint,
+                     sukat_sock_endpoint_t *endpoint,
                      sukat_sock_event_t event)
 {
   struct netdoge_ctx *ctx = (struct netdoge_ctx *)caller_ctx;
@@ -219,7 +224,7 @@ static void *conn_cb(void *caller_ctx,
     }
   else if (event == SUKAT_SOCK_CONN_EVENT_ACCEPTED)
     {
-      //TODO
+      ctx->client = endpoint;
     }
   else
     {
@@ -233,7 +238,7 @@ static void *conn_cb(void *caller_ctx,
         }
       else
         {
-          //TODO
+          ctx->client = NULL;
         }
     }
   return NULL;
@@ -243,20 +248,23 @@ static bool run_loop(struct netdoge_ctx *doge_ctx)
 {
   bool retval = true;
 
-  if (doge_ctx->target_params.domain == AF_INET ||
-      doge_ctx->target_params.domain == AF_INET6 ||
-      doge_ctx->target_params.domain == AF_UNSPEC)
+  if (!doge_ctx->target_params.server && !doge_ctx->connected)
     {
-      if (doge_ctx->target_params.type == SOCK_STREAM ||
-          doge_ctx->target_params.type == SOCK_SEQPACKET)
+      if (doge_ctx->target_params.domain == AF_INET ||
+          doge_ctx->target_params.domain == AF_INET6 ||
+          doge_ctx->target_params.domain == AF_UNSPEC)
         {
-          // Timeout on TCP connect
-          int err = sukat_sock_read(doge_ctx->sock_ctx, 100);
-          if (err != 0)
+          if (doge_ctx->target_params.type == SOCK_STREAM ||
+              doge_ctx->target_params.type == SOCK_SEQPACKET)
             {
-              return false;
+              // Timeout on TCP connect
+              int err = sukat_sock_read(doge_ctx->sock_ctx, 1000);
+              if (err != 0)
+                {
+                  return false;
+                }
             }
-      }
+        }
     }
 
   while (keep_running)
@@ -264,7 +272,7 @@ static bool run_loop(struct netdoge_ctx *doge_ctx)
       struct epoll_event events[2];
       int ret;
 
-      ret = epoll_wait(doge_ctx->epoll_fd, events, 2, 100);
+      ret = epoll_wait(doge_ctx->epoll_fd, events, 2, -1);
       if (ret == -1)
         {
           if (errno != EINTR)
@@ -281,6 +289,8 @@ static bool run_loop(struct netdoge_ctx *doge_ctx)
         {
           unsigned int i;
           enum sukat_sock_send_return send_ret;
+          sukat_sock_endpoint_t *endpoint =
+            (doge_ctx->client) ? doge_ctx->client : doge_ctx->target;
 
           for (i = 0; i < (unsigned int)ret; i++)
             {
@@ -291,11 +301,25 @@ static bool run_loop(struct netdoge_ctx *doge_ctx)
                       // Stdin closed, understandable.
                       // TODO timeout after close
                     }
+                  continue;
+                }
+              if (!doge_ctx->client && 
+                  doge_ctx->target_params.server &&
+                  (doge_ctx->target_params.type == SOCK_STREAM ||
+                   doge_ctx->target_params.type == SOCK_SEQPACKET))
+                {
+                  int err;
+
+                  err = sukat_sock_read(doge_ctx->sock_ctx, 0);
+                  if (err != 0)
+                    {
+                      return false;
+                    }
                 }
               else if (events[i].data.fd == STDIN_FILENO)
                 {
                   send_ret =
-                    sukat_sock_splice_to(doge_ctx->sock_ctx, doge_ctx->target,
+                    sukat_sock_splice_to(doge_ctx->sock_ctx, endpoint,
                                          STDIN_FILENO, doge_ctx->send_pipes,
                                          NULL);
                   if (send_ret != SUKAT_SEND_OK)
@@ -306,24 +330,12 @@ static bool run_loop(struct netdoge_ctx *doge_ctx)
               else
                 {
                   send_ret = sukat_sock_splice_from(doge_ctx->sock_ctx,
-                                                    doge_ctx->target,
-                                                    doge_ctx->read_pipes[1],
-                                                    NULL);
+                                                    endpoint,
+                                                    STDOUT_FILENO,
+                                                    doge_ctx->read_pipes);
                   if (send_ret != SUKAT_SEND_OK)
                     {
                       return false;
-                    }
-                  else
-                    {
-                      ssize_t ret = splice(doge_ctx->read_pipes[0], NULL,
-                                           STDOUT_FILENO, NULL, INT_MAX,
-                                           SPLICE_F_NONBLOCK);
-                      if (ret < 0)
-                        {
-                          ERR("Failed to splice to stdout: %s",
-                              strerror(errno));
-                          return false;
-                        }
                     }
                 }
             }
@@ -432,6 +444,11 @@ int main(int argc, char **argv)
                           else
                             {
                               ERR("Failed to poll stdin: %s", strerror(errno));
+                            }
+                          if (doge_ctx.client)
+                            {
+                              sukat_sock_disconnect(doge_ctx.sock_ctx,
+                                                    doge_ctx.client);
                             }
                         }
 
