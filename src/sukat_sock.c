@@ -184,43 +184,63 @@ static char *socket_log_params(struct sukat_sock_endpoint_params *params,
   return buf;
 }
 
-static char *socket_log_fd_info(struct fd_info *info, char *buf, size_t buf_len)
+static char *sock_log_saddr(struct sockaddr_storage *saddr, char *buf,
+                            size_t buf_len)
 {
+  int domain;
+  union {
+      struct sockaddr_un *sun;
+      struct sockaddr_in *sin;
+      struct sockaddr_in6 *sin6;
+      struct sockaddr_storage *storage;
+      struct sockaddr_tipc *stipc;
+  } info;
   size_t n_used = 0;
   char inet_buf[INET6_ADDRSTRLEN];
-  int domain;
 
-  assert(info != NULL && buf != NULL && buf_len > 0);
-
-  n_used += sock_log_type(info->type, buf, buf_len);
-
-  domain = info->storage.ss_family;
+  info.storage = saddr;
+  domain = info.storage->ss_family;
 
   switch(domain)
     {
     case AF_UNIX:
-      SAFEPUT("%sUNIX %s", (info->sun.sun_path[0] == '\0') ? "Abstract " : "",
-              (info->sun.sun_path[0] == '\0') ? info->sun.sun_path + 1 :
-              info->sun.sun_path);
+      SAFEPUT("%sUNIX %s", (info.sun->sun_path[0] == '\0') ? "Abstract " : "",
+              (info.sun->sun_path[0] == '\0') ? info.sun->sun_path + 1 :
+              info.sun->sun_path);
       break;
     case AF_TIPC:
       SAFEPUT("TIPC port_type %u instance %u",
-              ntohl(info->stipc.addr.nameseq.type),
-              ntohl(info->stipc.addr.nameseq.lower));
+              ntohl(info.stipc->addr.nameseq.type),
+              ntohl(info.stipc->addr.nameseq.lower));
       break;
     case AF_INET:
     case AF_INET6:
       SAFEPUT("IPv%d IP %s port %hu", (domain == AF_INET) ? 4 : 6,
               inet_ntop(domain, (domain == AF_INET) ?
-                        (void *)&info->sin.sin_addr :
-                        (void *)&info->sin6.sin6_addr,
+                        (void *)&info.sin->sin_addr :
+                        (void *)&info.sin6->sin6_addr,
                         inet_buf, sizeof(inet_buf)),
-              ntohs(info->sin.sin_port));
+              ntohs(info.sin->sin_port));
       // I don't think AF_UNSPEC should be here anymore
        break;
     default:
       SAFEPUT("Unknown family %d", domain);
       break;
+    }
+  return buf;
+}
+
+static char *socket_log_fd_info(struct fd_info *info, char *buf, size_t buf_len)
+{
+  size_t n_used = 0;
+
+  assert(info != NULL && buf != NULL && buf_len > 0);
+
+  n_used += sock_log_type(info->type, buf, buf_len);
+
+  if (buf_len < n_used)
+    {
+      sock_log_saddr(&info->storage, buf + n_used, buf_len - n_used);
     }
   return buf;
 }
@@ -907,6 +927,23 @@ static ret_t read_stream(sukat_sock_t *ctx, sukat_sock_endpoint_t *endpoint)
   return (disconnected == true) ? ERR_FATAL : ERR_OK;
 }
 
+static char *sock_hdr_or_peer_to_str(sukat_sock_endpoint_t *peer,
+                                     struct msghdr *hdr,
+                                     char *buf, size_t buf_len)
+{
+  if (hdr && hdr->msg_namelen)
+    {
+      return sock_log_saddr((struct sockaddr_storage *)&hdr->msg_name,
+                            buf, buf_len);
+    }
+  else if (peer && peer->info.slen)
+    {
+      return sukat_sock_endpoint_to_str(peer, buf, buf_len);
+    }
+  snprintf(buf, buf_len, "unidentified");
+  return buf;
+}
+
 static ret_t sock_dgram_loop(sukat_sock_t *ctx, int fd,
                              sukat_sock_endpoint_t *peer, struct msghdr *hdr,
                              void *caller_ctx)
@@ -926,7 +963,6 @@ static ret_t sock_dgram_loop(sukat_sock_t *ctx, int fd,
 
   hdr->msg_iov = &iov;
   hdr->msg_iovlen = 1;
-
   do
     {
       hdr->msg_flags = 0;
@@ -934,8 +970,8 @@ static ret_t sock_dgram_loop(sukat_sock_t *ctx, int fd,
       ret = recvmsg(fd, hdr, 0);
       if (ret > 0)
         {
-          DBG(ctx, "Received %zu byte message from %s", ret,
-              sukat_sock_endpoint_to_str(peer, dbg_buf, sizeof(dbg_buf)));
+          DBG(ctx, "Received %zu byte message from %s.", ret,
+              sock_hdr_or_peer_to_str(peer, hdr, dbg_buf, sizeof(dbg_buf)));
           if (hdr->msg_name && hdr->msg_namelen)
             {
               peer->info.slen = hdr->msg_namelen;
@@ -1618,48 +1654,6 @@ void sukat_sock_disconnect(sukat_sock_t *ctx, sukat_sock_endpoint_t *peer)
       peer->destroyed = true;
       destro_delete(ctx->destro_ctx, &peer->destro_client_ctx);
     }
-}
-
-char *sukat_sock_stringify_peer(struct sockaddr_storage *saddr, size_t sock_len,
-                                char *buf, size_t buf_len)
-{
-  if (buf && buf_len)
-    {
-      if (saddr && sock_len)
-        {
-          union {
-              struct sockaddr_in *sin;
-              struct sockaddr_in6 *sin6;
-          } stypes;
-          char addr_buf[INET6_ADDRSTRLEN];
-          uint16_t port;
-          void *src;
-
-          switch (saddr->ss_family)
-            {
-            case AF_INET:
-            case AF_INET6:
-              stypes.sin = (struct sockaddr_in *)saddr;
-              src = (saddr->ss_family == AF_INET) ?
-                (void *)&stypes.sin->sin_addr : (void *)&stypes.sin6->sin6_addr;
-              port = ntohs((saddr->ss_family == AF_INET) ?
-                           stypes.sin->sin_port : stypes.sin6->sin6_port);
-              snprintf(buf, buf_len, "%s:%hu",
-                       inet_ntop(saddr->ss_family, src, addr_buf,
-                                 sizeof(addr_buf)), port);
-              break;
-            default:
-              snprintf(buf, buf_len, "Family %u", saddr->ss_family);
-              break;
-            }
-        }
-      else
-        {
-          snprintf(buf, buf_len, "Invalid argument");
-        }
-      return buf;
-    }
-  return NULL;
 }
 
 int get_domain(sukat_sock_endpoint_t *endpoint)

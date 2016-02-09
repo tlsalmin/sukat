@@ -819,7 +819,7 @@ TEST_F(sukat_sock_test_sun_dgram, sukat_sock_test_sun_dgram_recv)
   int fd;
   ssize_t ret;
   size_t i;
-  const size_t n_messages = 50, message_size = 60;
+  const size_t n_messages = 9, message_size = 16;
   char buf[BUFSIZ];
   sukat_sock_endpoint_t client_endpoint;
 
