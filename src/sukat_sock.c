@@ -1094,9 +1094,96 @@ send_cached(sukat_sock_t *ctx, sukat_sock_endpoint_t *endpoint)
   return SUKAT_SEND_OK;
 }
 
+static ssize_t sock_splice_intermediary(sukat_sock_t *ctx, int fd_in,
+                                        int fd_out, int *inter_pipes)
+{
+  ssize_t ret;
+  ssize_t total_spliced = 0;
+#define SPLICE_FLAGS (SPLICE_F_MOVE | SPLICE_F_MORE | SPLICE_F_NONBLOCK)
+
+  do
+    {
+      ret = splice(fd_in, NULL, inter_pipes[1], NULL, INT_MAX, SPLICE_FLAGS);
+      DBG(ctx, "Splice returned %zd from fd %d", ret, fd_in);
+      if (ret > 0 || ITBLOCKS(ret))
+        {
+          ret =
+            splice(inter_pipes[0], NULL, fd_out, NULL, INT_MAX, SPLICE_FLAGS);
+          DBG(ctx, "Splice other side returned %zd to fd %d", ret, fd_out);
+          total_spliced += (ret > 0) ? total_spliced : 0;
+        }
+    } while (ret > 0);
+  if (!ITBLOCKS(ret))
+    {
+      ERR(ctx, "Failed to splice data: %s",
+          (ret == 0) ? "Disconnected" : strerror(errno));
+      return -1;
+    }
+  return total_spliced;
+}
+
+static ssize_t sock_splice(sukat_sock_t *ctx, int fd_in, int fd_out,
+                           int *inter_pipes)
+{
+  ssize_t total_spliced = 0;
+
+  if (inter_pipes)
+    {
+      total_spliced = sock_splice_intermediary(ctx, fd_in, fd_out, inter_pipes);
+    }
+  else
+    {
+      ssize_t ret;
+
+      do
+        {
+          ret = splice(fd_in, NULL, fd_out, NULL, INT_MAX, SPLICE_FLAGS);
+          total_spliced += (ret > 0) ? total_spliced : 0;
+        }
+      while (ret > 0);
+      if (!ITBLOCKS(ret))
+        {
+          ERR(ctx, "Failed to splice data: %s",
+              (ret == 0) ? "Disconnected" : strerror(errno));
+          return -1;
+        }
+    }
+
+  return total_spliced;
+}
+
+#undef SPLICE_FLAGS
+
+static ret_t sock_splice_event(sukat_sock_t *ctx,
+                               sukat_sock_endpoint_t *endpoint)
+{
+  void *caller_ctx = get_caller_ctx(ctx, endpoint);
+  int target_fd = -1, *intermediary_fds;
+
+  assert(ctx != NULL && endpoint != NULL && ctx->cbs.splice_cb != NULL);
+  ctx->cbs.splice_cb(caller_ctx, endpoint, &target_fd, &intermediary_fds);
+  if (target_fd >= 0)
+    {
+      ssize_t ret =
+        sock_splice(ctx, endpoint->info.fd, target_fd,intermediary_fds);
+
+      return (ret >= 0) ? ERR_OK : ERR_FATAL;
+    }
+  else
+    {
+      ERR(ctx, "Invalid fd %d given for splicing", target_fd);
+    }
+
+  return ERR_FATAL;
+}
+
 static ret_t event_read(sukat_sock_t *ctx,
                         sukat_sock_endpoint_t *endpoint)
 {
+  if (ctx->cbs.splice_cb)
+    {
+      return sock_splice_event(ctx, endpoint);
+    }
   if (socket_connection_oriented(endpoint->info.type))
     {
       if (endpoint->info.type == SOCK_SEQPACKET)
@@ -1547,63 +1634,6 @@ static enum sukat_sock_send_return send_seqm_msg(sukat_sock_t *ctx,
   return sock_send_dgram(ctx, client->info.fd, msg, msg_len, &hdr);
 }
 
-static enum sukat_sock_send_return
-  sock_splice_intermediary(sukat_sock_t *ctx, int fd_in, int fd_out,
-                           int *inter_pipes)
-{
-  ssize_t ret;
-#define SPLICE_FLAGS (SPLICE_F_MOVE | SPLICE_F_MORE | SPLICE_F_NONBLOCK)
-
-  do
-    {
-      ret = splice(fd_in, NULL, inter_pipes[1], NULL, INT_MAX, SPLICE_FLAGS);
-      DBG(ctx, "Splice returned %zd from fd %d", ret, fd_in);
-      if (ret > 0 || ITBLOCKS(ret))
-        {
-          ret =
-            splice(inter_pipes[0], NULL, fd_out, NULL, INT_MAX, SPLICE_FLAGS);
-          DBG(ctx, "Splice other side returned %zd to fd %d", ret, fd_out);
-        }
-    } while (ret > 0);
-  if (!ITBLOCKS(ret))
-    {
-      ERR(ctx, "Failed to splice data: %s",
-          (ret == 0) ? "Disconnected" : strerror(errno));
-      return SUKAT_SEND_ERROR;
-    }
-  return SUKAT_SEND_OK;
-}
-
-static enum sukat_sock_send_return sock_splice(sukat_sock_t *ctx,
-                                               int fd_in, int fd_out,
-                                               int *inter_pipes)
-{
-
-  if (inter_pipes)
-    {
-      return sock_splice_intermediary(ctx, fd_in, fd_out, inter_pipes);
-    }
-  else
-    {
-      ssize_t ret;
-
-      do
-        {
-          ret = splice(fd_in, NULL, fd_out, NULL, INT_MAX, SPLICE_FLAGS);
-        }
-      while (ret > 0);
-      if (!ITBLOCKS(ret))
-        {
-          ERR(ctx, "Failed to splice data: %s",
-              (ret == 0) ? "Disconnected" : strerror(errno));
-          return SUKAT_SEND_ERROR;
-        }
-    }
-
-  return SUKAT_SEND_OK;
-}
-
-#undef SPLICE_FLAGS
 #undef ITBLOCKS
 
 enum sukat_sock_send_return sukat_send_msg(sukat_sock_t *ctx,
@@ -1661,31 +1691,38 @@ int get_domain(sukat_sock_endpoint_t *endpoint)
   return endpoint->info.storage.ss_family;
 }
 
-enum sukat_sock_send_return
-  sukat_sock_splice_to(sukat_sock_t *ctx, sukat_sock_endpoint_t *endpoint,
-                       int fd_in, int *inter_pipes,
-                       __attribute__((unused)) sukat_sock_endpoint_t *source)
+ssize_t sukat_sock_splice_to(sukat_sock_t *ctx, sukat_sock_endpoint_t *endpoint,
+  int fd_in, int *inter_pipes,
+  __attribute__((unused)) sukat_sock_endpoint_t *source)
 {
+  ssize_t ret;
+
   if (!ctx || !endpoint || fd_in < 0)
     {
       ERR(ctx, "Invalid argument to splicing: ctx: %p endpoint %p fd %d",
           ctx, endpoint, fd_in);
       return SUKAT_SEND_ERROR;
     }
-  return sock_splice(ctx, fd_in, endpoint->info.fd, inter_pipes);
+  ret = sock_splice(ctx, fd_in, endpoint->info.fd, inter_pipes);
+
+  return (ret >= 0) ? SUKAT_SEND_OK : SUKAT_SEND_ERROR;
 }
 
-enum sukat_sock_send_return
-  sukat_sock_splice_from(sukat_sock_t *ctx, sukat_sock_endpoint_t *endpoint,
-                       int fd_out, int *inter_pipes)
+ssize_t sukat_sock_splice_from(sukat_sock_t *ctx,
+                               sukat_sock_endpoint_t *endpoint,
+                               int fd_out, int *inter_pipes)
 {
+  ssize_t ret;
+
   if (!ctx || !endpoint || fd_out < 0)
     {
       ERR(ctx, "Invalid argument to splicing: ctx: %p endpoint %p fd %d",
           ctx, endpoint, fd_out);
       return SUKAT_SEND_ERROR;
     }
-  return sock_splice(ctx, endpoint->info.fd, fd_out, inter_pipes);
+  ret = sock_splice(ctx, endpoint->info.fd, fd_out, inter_pipes);
+
+  return (ret >= 0) ? SUKAT_SEND_OK : SUKAT_SEND_ERROR;
 }
 
 uint16_t sukat_sock_get_port(sukat_sock_endpoint_t *endpoint)

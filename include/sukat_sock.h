@@ -79,13 +79,33 @@ typedef int (*sukat_sock_msg_len_cb)(void *ctx, uint8_t *buf, size_t buf_len);
  * Callback invoked each time a full message is received.
  *
  * @param ctx           Caller context.
- * @param endpoint        Client context. If the msg_cb is invoked on the endpoint,
+ * @param endpoint      Client context. If the msg_cb is invoked on the endpoint,
  *                      this will be NULL.
  * @param buf           Buffer containing message.
  * @param buf_len       Length of message.
  */
 typedef void (*sukat_sock_msg_cb)(void *ctx, sukat_sock_endpoint_t *endpoint,
                                   uint8_t *buf, size_t buf_len);
+
+/*!
+ * @brief Callback for getting a target for splicing.
+ *
+ * If this callback is set and there is data to be read from a peer, the
+ * callback will be invoked to query for a target fd and optional intermediary
+ * pipes for splicing.
+ *
+ * Setting this will override the msg_cb and len_cb.
+ *
+ * @param ctx           Caller context.
+ * @param endpoint      Endpoint having data.
+ * @param target        FD to which data should be spliced.
+ * @param intermediary  If != NULL, a pair of pipes that will be used before
+ *                      splicing data directly to the \p target. This is
+ *                      required if neither the source nor the target are pipes
+ *                      themselves.
+ */
+typedef void (*sukat_sock_splice_cb)(void *ctx, sukat_sock_endpoint_t *endpoint,
+                                     int *target, int **intermediary);
 
 /*!
  * Callback invoked when an error is noticed in a connection. If id == -1,
@@ -125,6 +145,7 @@ struct sukat_sock_cbs
   sukat_sock_msg_len_cb msg_len_cb;
   sukat_sock_msg_cb msg_cb;
   sukat_sock_error_cb error_cb;
+  sukat_sock_splice_cb splice_cb;
 };
 
 /*!
@@ -293,16 +314,16 @@ enum sukat_sock_send_return sukat_send_msg(sukat_sock_t *ctx,
  * @param source        Alternative source endpoint for non-connection oriented
  *                      sockets.
  *
- * @return ::sukat_sock_send_return
+ * @return -1           Error.
+ * @return >= 0         Amount of data spliced.
  */
-enum sukat_sock_send_return
-  sukat_sock_splice_to(sukat_sock_t *ctx, sukat_sock_endpoint_t *endpoint,
-                       int fd_in, int *inter_pipes,
-                       sukat_sock_endpoint_t *source);
+ssize_t sukat_sock_splice_to(sukat_sock_t *ctx, sukat_sock_endpoint_t *endpoint,
+                             int fd_in, int *inter_pipes,
+                             sukat_sock_endpoint_t *source);
 
-enum sukat_sock_send_return
-  sukat_sock_splice_from(sukat_sock_t *ctx, sukat_sock_endpoint_t *endpoint,
-                       int fd_out, int *inter_pipes);
+ssize_t sukat_sock_splice_from(sukat_sock_t *ctx,
+                               sukat_sock_endpoint_t *endpoint,
+                               int fd_out, int *inter_pipes);
 
 /*!
  * Converts the peer information \p endpoint into a human readable format to

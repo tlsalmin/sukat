@@ -27,12 +27,13 @@ struct netdoge_ctx
   int send_pipes[2];
   int read_pipes[2];
   sukat_sock_endpoint_t *client;
+  struct sukat_sock_endpoint_params target_params;
   struct
     {
-      unsigned int connected:1;
+      unsigned int connected:1; /*!< Either server has atleast one client or
+                                     the client has connected */
       unsigned int unused:7;
     };
-  struct sukat_sock_endpoint_params target_params;
 };
 
 uint8_t log_level = 0;
@@ -200,6 +201,16 @@ static void log_cb(enum sukat_log_lvl lvl, const char *msg)
     }
 }
 
+static void splice_cb(void *ctx,
+                      __attribute__((unused))sukat_sock_endpoint_t *endpoint,
+                      int *target_fd, int **intermediary_fds)
+{
+  struct netdoge_ctx *doge_ctx = (struct netdoge_ctx *)ctx;
+
+  *target_fd = STDOUT_FILENO;
+  *intermediary_fds = doge_ctx->read_pipes;
+}
+
 static bool create_temp_endpoint(struct netdoge_ctx *doge_ctx)
 {
   if (doge_ctx->target_params.type == SOCK_STREAM ||
@@ -211,8 +222,7 @@ static bool create_temp_endpoint(struct netdoge_ctx *doge_ctx)
   return false;
 }
 
-static void *conn_cb(void *caller_ctx,
-                     sukat_sock_endpoint_t *endpoint,
+static void *conn_cb(void *caller_ctx, sukat_sock_endpoint_t *endpoint,
                      sukat_sock_event_t event)
 {
   struct netdoge_ctx *ctx = (struct netdoge_ctx *)caller_ctx;
@@ -225,21 +235,18 @@ static void *conn_cb(void *caller_ctx,
   else if (event == SUKAT_SOCK_CONN_EVENT_ACCEPTED)
     {
       ctx->client = endpoint;
+      ctx->connected = true;
     }
   else
     {
+      ctx->connected = false;
+      // client already destroyed if this doge is running as server.
+      ctx->client = NULL;
       if (!ctx->target_params.server)
         {
-          ctx->connected = false;
-          keep_running = false;
-          // target already destroyed
           ctx->target = NULL;
-          keep_running = false;
         }
-      else
-        {
-          ctx->client = NULL;
-        }
+      keep_running = false;
     }
   return NULL;
 }
@@ -248,22 +255,13 @@ static bool run_loop(struct netdoge_ctx *doge_ctx)
 {
   bool retval = true;
 
-  if (!doge_ctx->target_params.server && !doge_ctx->connected)
+  while (!doge_ctx->connected && keep_running)
     {
-      if (doge_ctx->target_params.domain == AF_INET ||
-          doge_ctx->target_params.domain == AF_INET6 ||
-          doge_ctx->target_params.domain == AF_UNSPEC)
+      // Timeout on TCP connect
+      int err = sukat_sock_read(doge_ctx->sock_ctx, 1000);
+      if (err != 0)
         {
-          if (doge_ctx->target_params.type == SOCK_STREAM ||
-              doge_ctx->target_params.type == SOCK_SEQPACKET)
-            {
-              // Timeout on TCP connect
-              int err = sukat_sock_read(doge_ctx->sock_ctx, 1000);
-              if (err != 0)
-                {
-                  return false;
-                }
-            }
+          keep_running = false;
         }
     }
 
@@ -284,14 +282,15 @@ static bool run_loop(struct netdoge_ctx *doge_ctx)
       else if (ret == 0)
         {
           // Shouldn't happen
+          abort();
         }
       else
         {
           unsigned int i;
-          enum sukat_sock_send_return send_ret;
           sukat_sock_endpoint_t *endpoint =
             (doge_ctx->client) ? doge_ctx->client : doge_ctx->target;
 
+          assert(endpoint != NULL);
           for (i = 0; i < (unsigned int)ret; i++)
             {
               if (events[i].events != EPOLLIN)
@@ -301,39 +300,27 @@ static bool run_loop(struct netdoge_ctx *doge_ctx)
                       // Stdin closed, understandable.
                       // TODO timeout after close
                     }
-                  continue;
-                }
-              if (!doge_ctx->client && 
-                  doge_ctx->target_params.server &&
-                  (doge_ctx->target_params.type == SOCK_STREAM ||
-                   doge_ctx->target_params.type == SOCK_SEQPACKET))
-                {
-                  int err;
-
-                  err = sukat_sock_read(doge_ctx->sock_ctx, 0);
-                  if (err != 0)
+                  else
                     {
-                      return false;
+                      // Again shouldn't happen
+                      abort();
                     }
+                  continue;
                 }
               else if (events[i].data.fd == STDIN_FILENO)
                 {
-                  send_ret =
+                  ssize_t send_ret =
                     sukat_sock_splice_to(doge_ctx->sock_ctx, endpoint,
                                          STDIN_FILENO, doge_ctx->send_pipes,
                                          NULL);
-                  if (send_ret != SUKAT_SEND_OK)
+                  if (send_ret < 0)
                     {
                       return false;
                     }
                 }
               else
                 {
-                  send_ret = sukat_sock_splice_from(doge_ctx->sock_ctx,
-                                                    endpoint,
-                                                    STDOUT_FILENO,
-                                                    doge_ctx->read_pipes);
-                  if (send_ret != SUKAT_SEND_OK)
+                  if (sukat_sock_read(doge_ctx->sock_ctx, 0) != 0)
                     {
                       return false;
                     }
@@ -405,6 +392,7 @@ int main(int argc, char **argv)
           sock_params.master_epoll_fd_set = true;
           sock_cbs.log_cb = log_cb;
           sock_cbs.conn_cb = conn_cb;
+          sock_cbs.splice_cb = splice_cb;
           sock_params.caller_ctx = &doge_ctx;
 
           if ((doge_ctx.sock_ctx = sukat_sock_create(&sock_params, &sock_cbs)))
@@ -416,8 +404,12 @@ int main(int argc, char **argv)
                                             &doge_ctx.target_params);
                   if (doge_ctx.target)
                     {
-                      ERR("Succesfully %s!", (doge_ctx.target_params.server) ?
-                          "listening" : "connected");
+                      if (log_level)
+                        {
+                          LOG("Succesfully %s!",
+                              (doge_ctx.target_params.server) ? "listening" :
+                              "connected");
+                        }
                       keep_running = true;
 
                       if (simple_sighandler() == true)
