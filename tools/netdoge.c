@@ -293,28 +293,24 @@ static bool run_loop(struct netdoge_ctx *doge_ctx)
           assert(endpoint != NULL);
           for (i = 0; i < (unsigned int)ret; i++)
             {
-              if (events[i].events != EPOLLIN)
+              if (events[i].data.fd == STDIN_FILENO)
                 {
-                  if (events[i].data.fd == STDIN_FILENO)
+                  if (events[i].events & EPOLLIN)
                     {
-                      // Stdin closed, understandable.
-                      // TODO timeout after close
+                      ssize_t send_ret =
+                        sukat_sock_splice_to(doge_ctx->sock_ctx, endpoint,
+                                             STDIN_FILENO, doge_ctx->send_pipes);
+                      if (send_ret < 0)
+                        {
+                          return false;
+                        }
                     }
-                  else
+                  else if ((events[i].events & ~EPOLLIN))
                     {
-                      // Again shouldn't happen
-                      abort();
-                    }
-                  continue;
-                }
-              else if (events[i].data.fd == STDIN_FILENO)
-                {
-                  ssize_t send_ret =
-                    sukat_sock_splice_to(doge_ctx->sock_ctx, endpoint,
-                                         STDIN_FILENO, doge_ctx->send_pipes,
-                                         NULL);
-                  if (send_ret < 0)
-                    {
+                      if (log_level)
+                        {
+                          LOG("Stdin closed. Exiting");
+                        }
                       return false;
                     }
                 }
