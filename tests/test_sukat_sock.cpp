@@ -1522,3 +1522,228 @@ TEST_F(sukat_sock_test_inet_stream_server, sukat_sock_test_failed_conn)
 
   sukat_sock_destroy(client);
 }
+
+class sukat_sock_test_unix_splice : public ::testing::Test
+{
+protected:
+
+  struct splice_ctx
+    {
+      int intermediary_fds[2];
+      int server_pair[2];
+      int client_pair[2];
+      sukat_sock_endpoint_t *client_from_server;
+    };
+
+  sukat_sock_test_unix_splice() {
+  }
+
+  virtual ~sukat_sock_test_unix_splice() {
+  }
+
+  static void *splice_conn_cb(void *ctx, sukat_sock_endpoint_t *endpoint,
+                              sukat_sock_event_t event)
+    {
+      struct splice_ctx *test_ctx = (struct splice_ctx *)ctx;
+
+      EXPECT_NE(nullptr, test_ctx);
+      if (event == SUKAT_SOCK_CONN_EVENT_ACCEPTED)
+        {
+          test_ctx->client_from_server = endpoint;
+        }
+      else if (event == SUKAT_SOCK_CONN_EVENT_DISCONNECT)
+        {
+          if (endpoint == test_ctx->client_from_server)
+            {
+              test_ctx->client_from_server = NULL;
+            }
+        }
+      return NULL;
+    }
+
+  static void
+    splice_splice_cb(void *ctx, sukat_sock_endpoint_t *endpoint,
+                     int *fd, int **intermediary)
+    {
+      struct splice_ctx *test_ctx = (struct splice_ctx *)ctx;
+
+      EXPECT_NE(nullptr, test_ctx);
+      if (endpoint == test_ctx->client_from_server)
+        {
+          *fd = test_ctx->server_pair[1];
+        }
+      else
+        {
+          *fd = test_ctx->client_pair[1];
+        }
+      /* Use same fds for server and client intermediary. Yeah that'll probably
+       * never misfire.. */
+      if (test_ctx->intermediary_fds[0] != -1 &&
+          test_ctx->intermediary_fds[1] != -1)
+        {
+          *intermediary = test_ctx->intermediary_fds;
+        }
+    }
+
+  virtual void SetUp() {
+      struct sukat_sock_params params = { };
+      struct sukat_sock_cbs cbs = { };
+      struct sukat_sock_endpoint_params eparams = { };
+      unsigned int i;
+      char abstract_socket[256];
+      int err, *intptr;
+
+      for (intptr = (int *)&test_ctx, i = 0; i < n_fds; i++, intptr++)
+        {
+          *intptr = -1;
+        }
+
+      params.caller_ctx = &test_ctx;
+      cbs.log_cb = test_log_cb;
+      cbs.conn_cb = splice_conn_cb;
+      cbs.splice_cb = splice_splice_cb;
+      server = sukat_sock_create(&params, &cbs);
+      EXPECT_NE(nullptr, server);
+      client = sukat_sock_create(&params, &cbs);
+      EXPECT_NE(nullptr, client);
+
+      get_random_socket(abstract_socket, sizeof(abstract_socket));
+      eparams.type = SOCK_STREAM;
+      eparams.domain = AF_UNIX;
+      eparams.punix.is_abstract = true;
+      eparams.punix.name = abstract_socket;
+      eparams.server = true;
+
+      server_endpoint = sukat_sock_endpoint_add(server, &eparams);
+      EXPECT_NE(nullptr, server_endpoint);
+      eparams.server = false;
+      client_endpoint = sukat_sock_endpoint_add(client, &eparams);
+      EXPECT_NE(nullptr, client_endpoint);
+
+      err = sukat_sock_read(server, 100);
+      EXPECT_EQ(0, err);
+      EXPECT_NE(nullptr, test_ctx.client_from_server);
+
+      err = socketpair(AF_UNIX, SOCK_STREAM | O_NONBLOCK | O_CLOEXEC,
+                       0, test_ctx.client_pair);
+      EXPECT_EQ(0, err);
+      err = socketpair(AF_UNIX, SOCK_STREAM | O_NONBLOCK | O_CLOEXEC,
+                       0, test_ctx.server_pair);
+      EXPECT_EQ(0, err);
+  }
+
+  virtual void TearDown()
+    {
+      unsigned int i;
+      int *fdptr = (int *)&test_ctx;
+
+      for (i = 0; i < n_fds; i++, fdptr++)
+        {
+          if (*fdptr != -1)
+            {
+              close(*fdptr);
+            }
+        }
+      sukat_sock_disconnect(client, test_ctx.client_from_server);
+      sukat_sock_disconnect(client, client_endpoint);
+      sukat_sock_disconnect(server, server_endpoint);
+      sukat_sock_destroy(client);
+      sukat_sock_destroy(server);
+    }
+
+  struct splice_ctx test_ctx;
+  sukat_sock_t *server, *client;
+  sukat_sock_endpoint_t *server_endpoint, *client_endpoint;
+  const size_t n_fds = 6;
+};
+
+TEST_F(sukat_sock_test_unix_splice, sukat_sock_test_splice_basic)
+{
+  int err;
+  ssize_t ret;
+  char buf[BUFSIZ], cmpbuf[BUFSIZ];
+
+  err = pipe2(test_ctx.intermediary_fds, O_CLOEXEC | O_NONBLOCK);
+  EXPECT_EQ(0, err);
+
+  snprintf(buf, sizeof(buf), "Hello from client");
+  ret = write(test_ctx.client_pair[0], buf, strlen(buf));
+  EXPECT_LT(0, ret);
+
+  ret = sukat_sock_splice_to(client, client_endpoint, test_ctx.client_pair[1],
+                             test_ctx.intermediary_fds);
+  EXPECT_EQ(strlen(buf), ret);
+
+  err = sukat_sock_read(server, 100);
+  EXPECT_EQ(0, err);
+
+  ret = read(test_ctx.server_pair[0], cmpbuf, sizeof(cmpbuf));
+  EXPECT_EQ(strlen(buf), ret);
+  err = strncmp(buf, cmpbuf, strlen(buf));
+  EXPECT_EQ(0, err);
+}
+
+TEST_F(sukat_sock_test_unix_splice, sukat_sock_test_splice_bufsiz)
+{
+  int err;
+  ssize_t ret;
+  size_t total = 0, total_recv = 0;
+  char buf[BUFSIZ], cmpbuf[BUFSIZ];
+
+  err = pipe2(test_ctx.intermediary_fds, O_CLOEXEC | O_NONBLOCK);
+  EXPECT_EQ(0, err);
+
+  memset(buf, 'c', sizeof(buf));
+  memset(cmpbuf, 0, sizeof(cmpbuf));
+
+  while (total < sizeof(buf))
+    {
+      ret = write(test_ctx.server_pair[0], buf + total,  sizeof(buf) - total);
+      EXPECT_LT(0, ret);
+      total += (size_t)ret;
+      ret = sukat_sock_splice_to(server, test_ctx.client_from_server,
+                                 test_ctx.server_pair[1],
+                                 test_ctx.intermediary_fds);
+      EXPECT_LT(0, ret);
+      err = sukat_sock_read(client, 100);
+      EXPECT_EQ(0, err);
+      ret = read(test_ctx.client_pair[0], cmpbuf + total_recv,
+                 sizeof(cmpbuf) - total_recv);
+      EXPECT_LT(0, ret);
+    }
+  err = memcmp(buf, cmpbuf, sizeof(buf));
+  EXPECT_EQ(0, err);
+}
+
+TEST_F(sukat_sock_test_unix_splice, sukat_sock_test_splice_pipes)
+{
+  int *fdptr;
+  unsigned int i;
+  int err;
+  ssize_t ret;
+  char buf[BUFSIZ], cmpbuf[BUFSIZ];
+
+  for (i = 0, fdptr = (int *)&test_ctx.server_pair; i < 4; i++, fdptr++)
+    {
+      close(*fdptr);
+      *fdptr = -1;
+    }
+  err = pipe2(test_ctx.server_pair, O_CLOEXEC | O_NONBLOCK);
+  EXPECT_EQ(0, err);
+  err = pipe2(test_ctx.client_pair, O_CLOEXEC | O_NONBLOCK);
+  EXPECT_EQ(0, err);
+
+  snprintf(buf, sizeof(buf), "Client tries to do this without intermediary");
+  ret = write(test_ctx.client_pair[1], buf, strlen(buf));
+  EXPECT_EQ(strlen(buf), ret);
+
+  ret = sukat_sock_splice_to(client, client_endpoint, test_ctx.client_pair[0],
+                             NULL);
+  EXPECT_LE(0, ret);
+  err = sukat_sock_read(server, 100);
+  EXPECT_EQ(0, err);
+  ret = read(test_ctx.server_pair[0], cmpbuf, sizeof(buf));
+  EXPECT_EQ(strlen(buf), ret);
+  err = memcmp(buf, cmpbuf, strlen(buf));
+  EXPECT_EQ(0, err);
+}

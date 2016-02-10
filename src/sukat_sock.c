@@ -1110,7 +1110,10 @@ static ssize_t sock_splice_intermediary(sukat_sock_t *ctx, int fd_in,
           ret =
             splice(inter_pipes[0], NULL, fd_out, NULL, PIPE_BUF, SPLICE_FLAGS);
           DBG(ctx, "Splice other side returned %zd to fd %d", ret, fd_out);
-          total_spliced += (ret > 0) ? total_spliced : 0;
+          if (ret > 0)
+            {
+              total_spliced += ret;
+            }
         }
     } while (ret > 0);
   if (!ITBLOCKS(ret))
@@ -1138,7 +1141,10 @@ static ssize_t sock_splice(sukat_sock_t *ctx, int fd_in, int fd_out,
       do
         {
           ret = splice(fd_in, NULL, fd_out, NULL, PIPE_BUF, SPLICE_FLAGS);
-          total_spliced += (ret > 0) ? total_spliced : 0;
+          if (ret > 0)
+            {
+              total_spliced += ret;
+            }
         }
       while (ret > 0);
       if (!ITBLOCKS(ret))
@@ -1158,7 +1164,7 @@ static ret_t sock_splice_event(sukat_sock_t *ctx,
                                sukat_sock_endpoint_t *endpoint)
 {
   void *caller_ctx = get_caller_ctx(ctx, endpoint);
-  int target_fd = -1, *intermediary_fds;
+  int target_fd = -1, *intermediary_fds = NULL;
 
   assert(ctx != NULL && endpoint != NULL && ctx->cbs.splice_cb != NULL);
   ctx->cbs.splice_cb(caller_ctx, endpoint, &target_fd, &intermediary_fds);
@@ -1694,17 +1700,13 @@ int get_domain(sukat_sock_endpoint_t *endpoint)
 ssize_t sukat_sock_splice_to(sukat_sock_t *ctx, sukat_sock_endpoint_t *endpoint,
                              int fd_in, int *inter_pipes)
 {
-  ssize_t ret;
-
   if (!ctx || !endpoint || fd_in < 0)
     {
       ERR(ctx, "Invalid argument to splicing: ctx: %p endpoint %p fd %d",
           ctx, endpoint, fd_in);
-      return SUKAT_SEND_ERROR;
+      return -1;
     }
-  ret = sock_splice(ctx, fd_in, endpoint->info.fd, inter_pipes);
-
-  return (ret >= 0) ? SUKAT_SEND_OK : SUKAT_SEND_ERROR;
+  return sock_splice(ctx, fd_in, endpoint->info.fd, inter_pipes);
 }
 
 uint16_t sukat_sock_get_port(sukat_sock_endpoint_t *endpoint)
