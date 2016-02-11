@@ -375,7 +375,10 @@ int main(int argc, char **argv)
 
           sock_params.master_epoll_fd = doge_ctx.epoll_fd;
           sock_params.master_epoll_fd_set = true;
-          sock_cbs.log_cb = log_cb;
+          if (log_level)
+            {
+              sock_cbs.log_cb = log_cb;
+            }
           sock_cbs.conn_cb = conn_cb;
           sock_cbs.splice_cb = splice_cb;
           sock_params.caller_ctx = &doge_ctx;

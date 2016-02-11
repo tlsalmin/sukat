@@ -13,6 +13,11 @@ if (test)
   add_subdirectory(tests)
 endif()
 
+option(benchmark "Build all Benchmarks." OFF)
+if (benchmark)
+  add_subdirectory(benchmarks)
+endif()
+
 find_package(Doxygen)
 if (DOXYGEN_FOUND)
   # Grabbed from
