@@ -89,6 +89,7 @@ const char *bgp_msg_type_strs[] =
   "UNKNOWN"
 };
 
+#ifndef NDEBUG
 static const char *msg_type_to_str(enum bgp_msg_type type)
 {
   if (type >= BGP_MSG_OPEN && type <= BGP_MSG_KEEPALIVE)
@@ -97,6 +98,7 @@ static const char *msg_type_to_str(enum bgp_msg_type type)
     }
   return bgp_msg_type_strs[4];
 }
+#endif
 
 #pragma pack(1)
 /* See https://www.ietf.org/rfc/rfc4271.txt */

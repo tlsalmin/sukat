@@ -23,10 +23,12 @@ void sukat_do_log(sukat_log_cb log_cb, enum sukat_log_lvl lvl, const char *func,
 #define LOG(_ctx, ...) \
   sukat_do_log(LOG_CB(_ctx), SUKAT_LOG, __func__, __LINE__, __VA_ARGS__)
 #ifndef NDEBUG
+#define DBG_DEF(...) __VA_ARGS__
 #define DBG(_ctx, ...) \
   sukat_do_log(LOG_CB(_ctx), SUKAT_LOG_DBG, __func__, __LINE__, __VA_ARGS__)
 #else /* NDEBUG */
 #define DBG(...)
+#define DBG_DEF(...)
 #endif
 
 //! In time of need, just initialize a dummy struct for using these macroes.

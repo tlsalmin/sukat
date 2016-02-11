@@ -211,17 +211,6 @@ static void splice_cb(void *ctx,
   *intermediary_fds = doge_ctx->read_pipes;
 }
 
-static bool create_temp_endpoint(struct netdoge_ctx *doge_ctx)
-{
-  if (doge_ctx->target_params.type == SOCK_STREAM ||
-      doge_ctx->target_params.type == SOCK_SEQPACKET)
-    {
-      return true;
-    }
-  // TODO:
-  return false;
-}
-
 static void *conn_cb(void *caller_ctx, sukat_sock_endpoint_t *endpoint,
                      sukat_sock_event_t event)
 {
@@ -393,56 +382,52 @@ int main(int argc, char **argv)
 
           if ((doge_ctx.sock_ctx = sukat_sock_create(&sock_params, &sock_cbs)))
             {
-              if (create_temp_endpoint(&doge_ctx) == true)
+              doge_ctx.target =
+                sukat_sock_endpoint_add(doge_ctx.sock_ctx,
+                                        &doge_ctx.target_params);
+              if (doge_ctx.target)
                 {
-                  doge_ctx.target =
-                    sukat_sock_endpoint_add(doge_ctx.sock_ctx,
-                                            &doge_ctx.target_params);
-                  if (doge_ctx.target)
+                  if (log_level)
                     {
-                      if (log_level)
-                        {
-                          LOG("Succesfully %s!",
-                              (doge_ctx.target_params.server) ? "listening" :
-                              "connected");
-                        }
-                      keep_running = true;
-
-                      if (simple_sighandler() == true)
-                        {
-                          struct epoll_event ev =
-                            {
-                              .events = EPOLLIN,
-                              .data =
-                                {
-                                  .fd = STDIN_FILENO
-                                }
-                            };
-
-                          if (!epoll_ctl(doge_ctx.epoll_fd, EPOLL_CTL_ADD,
-                                        STDIN_FILENO, &ev))
-                            {
-                              if (run_loop(&doge_ctx) == true)
-                                {
-                                  retval = EXIT_SUCCESS;
-                                }
-                              epoll_ctl(doge_ctx.epoll_fd, EPOLL_CTL_DEL,
-                                        STDIN_FILENO, &ev);
-                            }
-                          else
-                            {
-                              ERR("Failed to poll stdin: %s", strerror(errno));
-                            }
-                          if (doge_ctx.client)
-                            {
-                              sukat_sock_disconnect(doge_ctx.sock_ctx,
-                                                    doge_ctx.client);
-                            }
-                        }
-
-                      sukat_sock_disconnect(doge_ctx.sock_ctx, doge_ctx.target);
+                      LOG("Succesfully %s!",
+                          (doge_ctx.target_params.server) ? "listening" :
+                          "connected");
                     }
-                  sukat_sock_disconnect(doge_ctx.sock_ctx, doge_ctx.source);
+                  keep_running = true;
+
+                  if (simple_sighandler() == true)
+                    {
+                      struct epoll_event ev =
+                        {
+                          .events = EPOLLIN,
+                          .data =
+                            {
+                              .fd = STDIN_FILENO
+                            }
+                        };
+
+                      if (!epoll_ctl(doge_ctx.epoll_fd, EPOLL_CTL_ADD,
+                                     STDIN_FILENO, &ev))
+                        {
+                          if (run_loop(&doge_ctx) == true)
+                            {
+                              retval = EXIT_SUCCESS;
+                            }
+                          epoll_ctl(doge_ctx.epoll_fd, EPOLL_CTL_DEL,
+                                    STDIN_FILENO, &ev);
+                        }
+                      else
+                        {
+                          ERR("Failed to poll stdin: %s", strerror(errno));
+                        }
+                      if (doge_ctx.client)
+                        {
+                          sukat_sock_disconnect(doge_ctx.sock_ctx,
+                                                doge_ctx.client);
+                        }
+                    }
+
+                  sukat_sock_disconnect(doge_ctx.sock_ctx, doge_ctx.target);
                 }
               sukat_sock_destroy(doge_ctx.sock_ctx);
               doge_ctx.sock_ctx = NULL;

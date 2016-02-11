@@ -991,8 +991,9 @@ static ret_t sock_dgram_loop(sukat_sock_t *ctx, int fd,
         }
       else if (!(ITBLOCKS(ret)))
         {
-          ERR(ctx, "%s while reading from socket%s%s",
+          ERR(ctx, "%s while reading from %s socket%s%s",
               (ret == 0) ? "Disconnected" : "Error",
+              sock_hdr_or_peer_to_str(peer, hdr, dbg_buf, sizeof(dbg_buf)),
               (ret == -1) ? ": " : "", (ret == -1) ? strerror(errno) : "");
           return ERR_FATAL;
         }
@@ -1598,7 +1599,7 @@ static enum sukat_sock_send_return send_dgram_msg(sukat_sock_t *ctx,
   enum sukat_sock_send_return retval;
   sukat_sock_endpoint_t on_the_fly = { };
   struct msghdr hdr = { };
-  char endpoint_str[256];
+  DBG_DEF(char endpoint_str[256]);
 
   on_the_fly.info.fd = -1;
 
@@ -1630,7 +1631,7 @@ static enum sukat_sock_send_return send_seqm_msg(sukat_sock_t *ctx,
                                                  uint8_t *msg, size_t msg_len)
 {
   struct msghdr hdr = { };
-  char endpoint_str[256];
+  DBG_DEF(char endpoint_str[256]);
 
   assert(ctx && client && msg && msg_len);
 
