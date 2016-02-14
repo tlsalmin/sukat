@@ -1,3 +1,7 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#include <unistd.h>
+#endif
 #include <iostream>
 #include <fstream>
 #include <random>
@@ -748,6 +752,7 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_seqpacket)
   tctx.compare_payload = tctx.msg_cb_should_visit = true;
   err = sukat_sock_read(client, 100);
   EXPECT_EQ(true, tctx.msg_cb_visited);
+  EXPECT_EQ(0, err);
   tctx.msg_cb_visited = false;
   tctx.offset = 0;
 
@@ -758,6 +763,7 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_seqpacket)
 
   err = sukat_sock_read(server, 100);
   EXPECT_EQ(true, tctx.msg_cb_visited);
+  EXPECT_EQ(0, err);
 
   sukat_sock_disconnect(client, client_from_server);
   sukat_sock_disconnect(client, server_from_client);

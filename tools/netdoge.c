@@ -439,23 +439,23 @@ int main(int argc, char **argv)
             {
               ERR("Failed o create socket context");
             }
-          // This is kinda annoying
-          if (doge_ctx.target_params.domain == AF_INET ||
-              doge_ctx.target_params.domain == AF_INET6 ||
-              doge_ctx.target_params.domain == AF_UNSPEC)
-            {
-              free((void *)doge_ctx.target_params.pinet.ip);
-              free((void *)doge_ctx.target_params.pinet.port);
-            }
-          else if (doge_ctx.target_params.domain == AF_UNIX)
-            {
-              free((void *)doge_ctx.target_params.punix.name);
-            }
           close_fds(&doge_ctx);
         }
       else
         {
           ERR("Failed to create master epoll fd: %s", strerror(errno));
+        }
+      // This is kinda annoying
+      if (doge_ctx.target_params.domain == AF_INET ||
+          doge_ctx.target_params.domain == AF_INET6 ||
+          doge_ctx.target_params.domain == AF_UNSPEC)
+        {
+          free((void *)doge_ctx.target_params.pinet.ip);
+          free((void *)doge_ctx.target_params.pinet.port);
+        }
+      else if (doge_ctx.target_params.domain == AF_UNIX)
+        {
+          free((void *)doge_ctx.target_params.punix.name);
         }
     }
   return retval;
