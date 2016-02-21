@@ -37,3 +37,15 @@ To generate the doxygen documentation:
 mkdir build && cd build
 cmake ../ && make && make doc
 ```
+
+## Benchmarks
+
+To build google benchmarks also:
+```bash
+mkdir build && cd build
+cmake ../ -Dbenchmark=ON && make
+```
+
+This will create the benchmarks/benchmark_sock binary, which right now tests
+socket creation and message sending between AF_UNIX, AF_INET, AF_INET6 and
+types SOCK_STREAM, SOCK_DGRAM, SOCK_SEQPACKET.
