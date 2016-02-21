@@ -216,11 +216,18 @@ public:
       this->client = sukat_sock_endpoint_add(this->client_ctx, &eparams);
       assert(this->client != NULL);
 
-      err = sukat_sock_read(this->ctx, 100);
-      assert(err == 0);
-      assert(this->client_from_server != NULL);
-      err = sukat_sock_read(this->client_ctx, 100);
-      assert(err == 0);
+      if (eparams.type != SOCK_DGRAM)
+        {
+          err = sukat_sock_read(this->ctx, 100);
+          assert(err == 0);
+          assert(this->client_from_server != NULL);
+          err = sukat_sock_read(this->client_ctx, 100);
+          assert(err == 0);
+        }
+      else
+        {
+          this->client_from_server = nullptr;
+        }
     }
 
    ~StreamTest()
@@ -229,7 +236,10 @@ public:
         {
           sukat_sock_disconnect(this->ctx, this->server);
           sukat_sock_disconnect(this->client_ctx, this->client);
-          sukat_sock_disconnect(this->ctx, this->client_from_server);
+          if (this->client_from_server)
+            {
+              sukat_sock_disconnect(this->ctx, this->client_from_server);
+            }
           sukat_sock_destroy(this->ctx);
           sukat_sock_destroy(this->client_ctx);
         }
@@ -243,37 +253,58 @@ public:
 
 BENCHMARK_REGISTER_F(SockFixture, sock_create)->Apply(domain_type_args);
 
-class SockInetStream : public benchmark::Fixture
+static void domain_and_size(benchmark::internal::Benchmark *b)
 {
-protected:
-  SockInetStream()
+  std::list<int> domains = {AF_INET, AF_INET6, AF_UNIX};
+  std::list<int> sizes = {8, 64, 512, 4096, 8192};
+  std::list<int>::iterator dom;
+
+  for (dom = domains.begin(); dom != domains.end(); dom++)
     {
-      teststream = std::make_unique<StreamTest>(AF_INET, SOCK_STREAM);
+      std::list<int>::iterator size;
+      for (size = sizes.begin(); size != sizes.end(); size++)
+        {
+          b->ArgPair(*size, *dom);
+        }
     }
+}
 
-  virtual ~SockInetStream()
-    {
-    }
-  std::unique_ptr<StreamTest> teststream;
-
-   void set_state(benchmark::State *state)
-     {
-       teststream->set_state(state);
-     }
-};
-
-static void run_all_the_way(benchmark::State& st,
-                            std::unique_ptr<StreamTest> &teststream,
-                            size_t msg_size)
+static void type_and_sizes(benchmark::internal::Benchmark *b)
 {
-  char buf[msg_size];
+  std::list<int> types = {SOCK_STREAM, SOCK_DGRAM, SOCK_SEQPACKET};
+  //std::list<int> types = {SOCK_STREAM, SOCK_SEQPACKET};
+  std::list<int> sizes = {8, 64, 512, 4096, 8192};
+  std::list<int>::iterator typ;
+
+  for (typ = types.begin(); typ != types.end(); typ++)
+    {
+      std::list<int>::iterator size;
+      for (size = sizes.begin(); size != sizes.end(); size++)
+        {
+          b->ArgPair(*size, *typ);
+        }
+    }
+}
+
+static void send_and_receive(benchmark::State& st, int domain, int type,
+                             size_t size)
+{
+  char buf[size];
   enum sukat_sock_send_return send_ret;
   int err;
   struct msg *msghdr = (struct msg *)buf;
+  std::unique_ptr<StreamTest> teststream;
+
+  msghdr->length = sizeof(buf);
+  if (st.thread_index == 0)
+    {
+      teststream = std::make_unique<StreamTest>(domain, type);
+      assert(teststream != nullptr);
+      teststream->set_state(&st);
+    }
 
   while (st.KeepRunning() && teststream->client)
     {
-      msghdr->length = sizeof(buf);
       do
         {
           send_ret = sukat_send_msg(teststream->client_ctx, teststream->client,
@@ -285,41 +316,18 @@ static void run_all_the_way(benchmark::State& st,
     }
 }
 
-BENCHMARK_DEFINE_F(SockInetStream, stream_test_inet)(benchmark::State& st)
+static void stream_and_domains(benchmark::State& st)
 {
-  set_state(&st);
-  run_all_the_way(st, teststream, st.range_x());
+  send_and_receive(st, st.range_y(), SOCK_STREAM, st.range_x());
 }
 
-BENCHMARK_REGISTER_F(SockInetStream,
-                     stream_test_inet)->Range(sizeof(struct msg), BUFSIZ);
+BENCHMARK(stream_and_domains)->Apply(domain_and_size);
 
-class SockUnixStream : public benchmark::Fixture
+static void unix_and_types(benchmark::State& st)
 {
-protected:
-  SockUnixStream()
-    {
-      teststream = std::make_unique<StreamTest>(AF_UNIX, SOCK_STREAM);
-    }
-
-  virtual ~SockUnixStream()
-    {
-    }
-  std::unique_ptr<StreamTest> teststream;
-
-   void set_state(benchmark::State *state)
-     {
-       teststream->set_state(state);
-     }
-};
-
-BENCHMARK_DEFINE_F(SockUnixStream, stream_test_unix)(benchmark::State& st)
-{
-  set_state(&st);
-  run_all_the_way(st, teststream, st.range_x());
+  send_and_receive(st, AF_UNIX, st.range_y(), st.range_x());
 }
 
-BENCHMARK_REGISTER_F(SockUnixStream,
-                     stream_test_unix)->Range(sizeof(struct msg), BUFSIZ);
+BENCHMARK(unix_and_types)->Apply(type_and_sizes);
 
 BENCHMARK_MAIN();
