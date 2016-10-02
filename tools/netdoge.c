@@ -110,21 +110,21 @@ static bool parse_opts(struct netdoge_ctx *doge_ctx, int argc, char **argv)
   int c, what;
   const struct option options[] =
     {
-        {"--listen", no_argument, NULL, 'l'},
-        {"--unix", no_argument, NULL, 'u'},
-        {"--tipc", no_argument, NULL, 't'},
-        {"--ipv6", no_argument, NULL, '6'},
-        {"--ipv4", no_argument, NULL, '4'},
-        {"--dgram", no_argument, NULL, 'g'},
-        {"--seqpacket", no_argument, NULL, 'e'},
-        {"--verbose", no_argument, NULL, 'v'},
-        {"--help", no_argument, NULL, 'h'},
+        {"listen", no_argument, NULL, 'l'},
+        {"unix", no_argument, NULL, 'u'},
+        {"tipc", no_argument, NULL, 't'},
+        {"ipv6", no_argument, NULL, '6'},
+        {"ipv4", no_argument, NULL, '4'},
+        {"dgram", no_argument, NULL, 'g'},
+        {"seqpacket", no_argument, NULL, 'e'},
+        {"verbose", no_argument, NULL, 'v'},
+        {"help", no_argument, NULL, 'h'},
         {},
     };
   const char *explanations[] =
     {
       "Listen instead of connecting",
-      "Use a AF_UNIX socket",
+      "Use a AF_UNIX socket. Adding ,abstract after path for abstract socket.",
       "Use a TIPC socket",
       "Use a IPv6 socket",
       "Use a IPv4 socket",
@@ -168,6 +168,7 @@ static bool parse_opts(struct netdoge_ctx *doge_ctx, int argc, char **argv)
           break;
         default:
           ERR("Unknown argument %c", c);
+        case 'h':
           goto fail;
           break;
         }

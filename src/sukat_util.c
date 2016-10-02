@@ -30,7 +30,7 @@ void sukat_util_usage(const struct option *opts, const char **explanations,
             {
               optstring[0] = '\0';
             }
-          fprintf(output, "    -%c,%s %s %s\n", opts[i].val, opts[i].name,
+          fprintf(output, "    -%c,--%s %s %s\n", opts[i].val, opts[i].name,
                   optstring, explanations[i]);
         }
     }

@@ -206,12 +206,12 @@ static bool parse_opts(struct bgp_query_ctx *ctx, int argc, char **argv)
 {
   const struct option options[] =
     {
-        {"--port", required_argument, NULL, 'p'},
-        {"--target-port", required_argument, NULL, 't'},
-        {"--as", required_argument, NULL, 'a'},
-        {"--bgp", required_argument, NULL, 'b'},
-        {"--server", no_argument, NULL, 's'},
-        {"--help", no_argument, NULL, 'h'},
+        {"port", required_argument, NULL, 'p'},
+        {"target-port", required_argument, NULL, 't'},
+        {"as", required_argument, NULL, 'a'},
+        {"bgp", required_argument, NULL, 'b'},
+        {"server", no_argument, NULL, 's'},
+        {"help", no_argument, NULL, 'h'},
         {}
     };
   const char *explanations[] =
