@@ -238,7 +238,7 @@ static char *socket_log_fd_info(struct fd_info *info, char *buf, size_t buf_len)
 
   n_used += sock_log_type(info->type, buf, buf_len);
 
-  if (buf_len < n_used)
+  if (buf_len > n_used)
     {
       sock_log_saddr(&info->storage, buf + n_used, buf_len - n_used);
     }
@@ -476,6 +476,7 @@ static int socket_create(sukat_sock_t *ctx,
   union {
       struct sockaddr_un sun;
       struct sockaddr_tipc tipc;
+      struct sockaddr_storage saddr;
   } socks;
   struct addrinfo hints = { }, *servinfo = NULL, *p;
 
@@ -502,16 +503,26 @@ static int socket_create(sukat_sock_t *ctx,
     }
   else if (is_inet(params->domain))
     {
-      hints.ai_addr = NULL;
-      hints.ai_flags = AI_PASSIVE;
-      if (getaddrinfo(params->pinet.ip, params->pinet.port, &hints, &servinfo)
-          != 0)
+      if (!params->pinet.ip && !params->pinet.port)
         {
-          ERR(ctx, "Failed to getaddrinfo for %s:%s", params->pinet.ip,
-              params->pinet.port);
-          return -1;
+          p = &hints;
+          hints.ai_family = hints.ai_addr->sa_family = AF_INET6;
+          hints.ai_addrlen = sizeof(socks.saddr);
+          hints.ai_socktype = SOCK_STREAM;
         }
-      p = servinfo;
+      else
+        {
+          hints.ai_addr = NULL;
+          hints.ai_flags = AI_PASSIVE;
+          if (getaddrinfo(params->pinet.ip, params->pinet.port, &hints,
+                          &servinfo) != 0)
+            {
+              ERR(ctx, "Failed to getaddrinfo for %s:%s", params->pinet.ip,
+                  params->pinet.port);
+              return -1;
+            }
+          p = servinfo;
+        }
     }
   else
     {

@@ -42,7 +42,7 @@ static void usage(const char *binary, const struct option *opts,
                   const char **explanations)
 {
   fprintf(stderr,
-          "%1$s: Connect to an endpoint\n"
+          "%1$s: Connect to an endpoint given as: <dns-name-or-ip>[,<port>]\n"
           "Usage: %1$s [<options>] <endpoint identifier>\n", binary);
   sukat_util_usage(opts, explanations, stderr);
 }
