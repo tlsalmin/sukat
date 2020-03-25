@@ -16,8 +16,8 @@ jobs:
     - name: cmake
       run: mkdir build && cd build && cmake -Dtest=ON ../
     - name: make
-      run: make
+      run: cd build && make
     - name: make test
-      run: make test
+      run: cd build && make test
     - name: make doc
-      run: make doc
+      run: cd build && make doc
