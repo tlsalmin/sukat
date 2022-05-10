@@ -1,17 +1,28 @@
-#ifndef TOOLS_COMMON_H
-#define TOOLS_COMMON_H
+#pragma once
 
 #include <stdbool.h>
-
-extern bool keep_running;
+#include <sys/signalfd.h>
 
 /*!
- * @brief Register a sighandler that will set ::keep_running to false on SIGINT
+ * @brief Creates a signalfd for termination/interruption.
  *
- * @return true  Success
- * @return false Failure
+ * @param additional_signals Additional signals to register.
+ *
+ * @return >= 0         signalfd.
+ * @return <  0         Failure.
  */
-bool simple_sighandler();
+int simple_sighandler(const sigset_t *additional_signals);
+
+/*!
+ * @brief Reads the signalfd for a signal.
+ *
+ * @param sigfd Signalfd to read.
+ *
+ * @return      >    0  Signal read.
+ * @return      ==   0  No signal received.
+ * @return      <    0  Failure.
+ */
+int simple_sighandler_read_signal(int sigfd);
 
 /*!
  * @brief Parse \p value_in_ascii and check that its not larget than \p max_size.
@@ -23,6 +34,5 @@ bool simple_sighandler();
  *
  * @return value parsed
  */
-unsigned long long safe_unsigned(char *value_in_ascii, long long int max_size);
-
-#endif /* !TOOLS_COMMON_H */
+unsigned long long safe_unsigned(const char *value_in_ascii,
+                                 long long int max_size);

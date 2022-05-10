@@ -68,6 +68,8 @@ struct sukat_bgp_peer_ctx
       uint8_t unused:4;
   } flags;
   bgp_id_t id;
+  bgp_id_t own_explicit_id; /**!< If != 0, own explicit id sent instead of main
+                                  in sukat_bgp_ctx_t. */
   sukat_bgp_t *main_ctx;
   void *caller_ctx;
 };
@@ -250,6 +252,7 @@ static bool msg_is_sane(sukat_bgp_t *bgp_ctx, uint8_t *buf, size_t buf_len)
                       return true;
                     }
                   ERR(bgp_ctx, "Invalid keepalive length %hu", msg_len);
+                  break;
                 case BGP_MSG_NOTIFICATION:
                   if (msg_len >=
                       sizeof(msg->hdr) + sizeof(msg->msg.notification))
@@ -668,6 +671,10 @@ static bool msg_send_open(sukat_bgp_t *ctx, sukat_bgp_peer_t *peer)
   size_t msg_len = msg_len_open(ctx);
   uint8_t buf[msg_len];
   struct bgp_msg *msg = (struct bgp_msg *)buf;
+  const bgp_id_t *id =
+    (peer->own_explicit_id.as_num != 0 && peer->own_explicit_id.bgp_id != 0)
+      ? &peer->own_explicit_id
+      : &ctx->id;
 
   assert(ctx != NULL && peer != NULL);
 
@@ -678,10 +685,11 @@ static bool msg_send_open(sukat_bgp_t *ctx, sukat_bgp_peer_t *peer)
   memset(&msg->msg.open, 0, sizeof(msg->msg.open));
 
   // Fill message.
-  msg->msg.open.as_num = htons(ctx->id.as_num);
+  msg->msg.open.as_num = htons(id->as_num);
   msg->msg.open.version = BGP_VERSION;
-  msg->msg.open.bgp_id = htonl(ctx->id.bgp_id);
-  msg->msg.open.hold_time = htons(ctx->hold_time);
+  msg->msg.open.bgp_id = htonl(id->bgp_id);
+  msg->msg.open.hold_time =
+    !ctx->hold_time ? htons(180) : htons(ctx->hold_time);
   // Add optional parameters here when added.
   msg->msg.open.opt_param_len = 0;
 
@@ -763,7 +771,11 @@ static void *bgp_conn_cb(void *caller_ctx, sukat_sock_endpoint_t *sock_peer,
 static bool bgp_bgp_id_from_ip(sukat_bgp_t *ctx,
                                struct sukat_bgp_params *params)
 {
-  if (!ctx->id.bgp_id)
+  if (!ctx->id.bgp_id && !params->bgp_id_str)
+    {
+      LOG(ctx, "No predefined bgp id. Must be set per added peer");
+    }
+  else if (!ctx->id.bgp_id)
     {
       const char *ip = (params->bgp_id_str) ? params->bgp_id_str :
         params->pinet.ip;
@@ -828,7 +840,8 @@ void bgp_destro_close(void *main_ctx, void *client_ctx)
 }
 
 void fill_endpoint_values(struct sukat_sock_endpoint_params *eparams,
-                          struct sukat_sock_params_inet *pinet)
+                          const struct sukat_sock_params_inet *pinet,
+                          const struct sukat_sock_params_inet *src)
 {
   const char *bgp_port = "179";
 
@@ -837,6 +850,12 @@ void fill_endpoint_values(struct sukat_sock_endpoint_params *eparams,
   eparams->pinet.port = (pinet->port) ? pinet->port : bgp_port;
   eparams->domain = AF_UNSPEC;
   eparams->type = SOCK_STREAM;
+  if (src)
+    {
+      eparams->source.pinet.ip = src->ip;
+      eparams->source.pinet.port = src->port;
+      eparams->prebound = true;
+    }
 }
 
 sukat_bgp_t *sukat_bgp_create(struct sukat_bgp_params *params,
@@ -887,7 +906,7 @@ sukat_bgp_t *sukat_bgp_create(struct sukat_bgp_params *params,
                 {
                   struct sukat_sock_endpoint_params eparams = { };
 
-                  fill_endpoint_values(&eparams, &params->pinet);
+                  fill_endpoint_values(&eparams, &params->pinet, NULL);
                   eparams.server = true;
                   ctx->endpoint =
                     sukat_sock_endpoint_add(ctx->sock_ctx, &eparams);
@@ -924,7 +943,9 @@ int sukat_bgp_read(sukat_bgp_t *ctx, int timeout)
 };
 
 sukat_bgp_peer_t *sukat_bgp_peer_add(sukat_bgp_t *ctx,
-                                     struct sukat_sock_params_inet *pinet)
+                                     const struct sukat_sock_params_inet *pinet,
+                                     const struct sukat_sock_params_inet *src,
+                                     const bgp_id_t *explicit_id)
 {
   if (ctx)
     {
@@ -937,7 +958,11 @@ sukat_bgp_peer_t *sukat_bgp_peer_add(sukat_bgp_t *ctx,
             {
               struct sukat_sock_endpoint_params eparams = { };
 
-              fill_endpoint_values(&eparams, pinet);
+              if (explicit_id)
+                {
+                  peer_ctx->own_explicit_id = *explicit_id;
+                }
+              fill_endpoint_values(&eparams, pinet, src);
               peer_ctx->main_ctx = ctx;
               eparams.caller_ctx = (void *)peer_ctx;
               peer_ctx->sock_peer =
@@ -1185,6 +1210,11 @@ void sukat_bgp_free_attr_list(struct sukat_bgp_path_attr *attr_list)
       attr_list = attr_list->next;
       free(iter);
     }
+}
+
+int sukat_bgp_get_epoll(sukat_bgp_t *ctx)
+{
+  return sukat_sock_get_epoll_fd(ctx->sock_ctx);
 }
 
 /*! @} */

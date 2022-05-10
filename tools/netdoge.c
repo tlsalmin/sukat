@@ -1,10 +1,7 @@
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
-
 #include <unistd.h>
 #include <assert.h>
 #include <stdlib.h>
+#include <signal.h>
 #include <stdio.h>
 #include <limits.h>
 #include <fcntl.h>
@@ -18,14 +15,17 @@
 #include "tools_log.h"
 #include "tools_common.h"
 
+static bool keep_running;
+
 struct netdoge_ctx
 {
   sukat_sock_t *sock_ctx;
   sukat_sock_endpoint_t *target;
   sukat_sock_endpoint_t *source;
-    int epoll_fd;
+  int epoll_fd;
   int send_pipes[2];
   int read_pipes[2];
+  int sigfd;
   sukat_sock_endpoint_t *client;
   struct sukat_sock_endpoint_params target_params;
   struct
@@ -304,6 +304,23 @@ static bool run_loop(struct netdoge_ctx *doge_ctx)
                       return false;
                     }
                 }
+              else if (events[i].data.fd == doge_ctx->sigfd)
+                {
+                  int signal_read =
+                    simple_sighandler_read_signal(doge_ctx->sigfd);
+
+                  switch (signal_read)
+                    {
+                    case 0:
+                    case SIGPIPE:
+                      break;
+                    case SIGTERM:
+                    case SIGINT:
+                    default:
+                      keep_running = false;
+                      break;
+                    }
+                }
               else
                 {
                   if (sukat_sock_read(doge_ctx->sock_ctx, 0) != 0)
@@ -391,34 +408,33 @@ int main(int argc, char **argv)
                                         &doge_ctx.target_params);
               if (doge_ctx.target)
                 {
+                  sigset_t sigs;
                   if (log_level)
                     {
                       LOG("Succesfully %s!",
                           (doge_ctx.target_params.server) ? "listening" :
                           "connected");
                     }
-                  keep_running = true;
+                  sigemptyset(&sigs);
+                  sigaddset(&sigs, SIGPIPE);
 
-                  if (simple_sighandler() == true)
+                  doge_ctx.sigfd = simple_sighandler(&sigs);
+                  if (doge_ctx.sigfd >= 0)
                     {
-                      struct epoll_event ev =
-                        {
-                          .events = EPOLLIN,
-                          .data =
-                            {
-                              .fd = STDIN_FILENO
-                            }
-                        };
+                      struct epoll_event ev[] = {
+                        {.events = EPOLLIN, .data = {.fd = STDIN_FILENO}},
+                        {.events = EPOLLIN, .data = {.fd = doge_ctx.sigfd}}};
 
                       if (!epoll_ctl(doge_ctx.epoll_fd, EPOLL_CTL_ADD,
-                                     STDIN_FILENO, &ev))
+                                     STDIN_FILENO, &ev[0]) &&
+                          !epoll_ctl(doge_ctx.epoll_fd, EPOLL_CTL_ADD,
+                                     doge_ctx.sigfd, &ev[1]))
                         {
+                          keep_running = true;
                           if (run_loop(&doge_ctx) == true)
                             {
                               retval = EXIT_SUCCESS;
                             }
-                          epoll_ctl(doge_ctx.epoll_fd, EPOLL_CTL_DEL,
-                                    STDIN_FILENO, &ev);
                         }
                       else
                         {
@@ -429,6 +445,7 @@ int main(int argc, char **argv)
                           sukat_sock_disconnect(doge_ctx.sock_ctx,
                                                 doge_ctx.client);
                         }
+                      close(doge_ctx.sigfd);
                     }
 
                   sukat_sock_disconnect(doge_ctx.sock_ctx, doge_ctx.target);

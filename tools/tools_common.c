@@ -1,18 +1,16 @@
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
+#include "tools_common.h"
 
-#include <stdio.h>
 #include <errno.h>
-#include <string.h>
-#include <stdlib.h>
 #include <signal.h>
 #include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
 #include "tools_log.h"
 
-bool keep_running;
-
-unsigned long long safe_unsigned(char *value_in_ascii, long long max_size)
+unsigned long long safe_unsigned(const char *value_in_ascii, long long max_size)
 {
   long long val = atoll(value_in_ascii);
 
@@ -25,25 +23,56 @@ unsigned long long safe_unsigned(char *value_in_ascii, long long max_size)
   return (unsigned long long)val;
 }
 
-static void sighandler(int siggie)
+int simple_sighandler(const sigset_t *additional_signals)
 {
-  LOG("Received signal %d", siggie);
-  keep_running = false;
-}
+  sigset_t sigs_temp, sigs;
 
-bool simple_sighandler()
-{
-  struct sigaction new_action =
-    {
-      .sa_handler = sighandler,
-    };
+  sigemptyset(&sigs_temp);
+  sigemptyset(&sigs);
+  sigaddset(&sigs_temp, SIGTERM);
+  sigaddset(&sigs_temp, SIGINT);
+  sigorset(&sigs, &sigs_temp, additional_signals);
 
-  if (sigaction(SIGINT, &new_action, NULL))
+  if (!sigprocmask(SIG_BLOCK, &sigs, &sigs_temp))
     {
-      ERR("Failed to set signal handler: %s", strerror(errno));
-      return false;
+      int ret = signalfd(-1, &sigs, SFD_NONBLOCK | SFD_CLOEXEC);
+      if (ret != -1)
+        {
+          LOG("Created signalfd %d", ret);
+          return ret;
+        }
+      else
+        {
+          ERR("Failed to create signalfd: %m");
+        }
+      sigprocmask(SIG_BLOCK, &sigs_temp, NULL);
     }
-  return true;
+  else
+    {
+      ERR("Failed to block signals: %m");
+    }
+  return -1;
 }
 
+int simple_sighandler_read_signal(int sigfd)
+{
+  struct signalfd_siginfo sinfo;
+  int ret = read(sigfd, &sinfo, sizeof(sinfo));
+
+  if (ret == sizeof(sinfo))
+    {
+      LOG("Received signal %s", strsignal(sinfo.ssi_signo));
+
+      return sinfo.ssi_signo;
+    }
+  if (ret == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
+    {
+      return 0;
+    }
+  else
+    {
+      ERR("Failed to read signalfd: %m");
+    }
+  return -1;
+}
 

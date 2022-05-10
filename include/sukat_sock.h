@@ -202,6 +202,7 @@ struct sukat_sock_endpoint_params
   struct
     {
       uint8_t server:1; //!< If true, act as server.
+      uint8_t prebound:1; //!< If true, bind the connections according to source
       uint8_t unused:6;
     };
   union
@@ -210,6 +211,12 @@ struct sukat_sock_endpoint_params
       struct sukat_sock_params_unix punix;
       struct sukat_sock_params_tipc ptipc;
     };
+  union
+    {
+      struct sukat_sock_params_inet pinet;
+      struct sukat_sock_params_unix punix;
+      struct sukat_sock_params_tipc ptipc;
+    } source;
 };
 
 /*!
@@ -340,6 +347,16 @@ char *sukat_sock_endpoint_to_str(sukat_sock_endpoint_t *endpoint,
  * @return 0    Wrong domain.
  */
 uint16_t sukat_sock_get_port(sukat_sock_endpoint_t *endpoint);
+
+/*!
+ * @brief Convert reading from the endpoint fd the connection to a string.
+ *
+ * @param endpoint Endpoint to query.
+ *
+ * @return Stringified fd.
+ */
+char *sukat_sock_endpoint_fd_to_str(sukat_sock_endpoint_t *endpoint,
+                                    char *buf, size_t buf_len);
 
 #endif /* SUKAT_SOCK_H */
 

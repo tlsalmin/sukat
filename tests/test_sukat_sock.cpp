@@ -1,13 +1,11 @@
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
 #include <unistd.h>
-#endif
 #include <iostream>
 #include <fstream>
 #include <random>
 #include <string>
 
 #include "gtest/gtest.h"
+#include "gmock/gmock.h"
 #include "test_common.h"
 
 extern "C"{
@@ -392,7 +390,7 @@ TEST_F(sukat_sock_test_sun, sukat_sock_test_sun_stream_connect_many)
   sukat_sock_t *server;
   sukat_sock_endpoint_t *server_endpoint;
   size_t i;
-  const size_t n_clients = SOMAXCONN;
+  const size_t n_clients = 128;
   sukat_sock_t *clients[n_clients];
   sukat_sock_endpoint_t *client_endpoints[n_clients];
   int err;
@@ -827,7 +825,7 @@ TEST_F(sukat_sock_test_sun_dgram, sukat_sock_test_sun_dgram_recv)
   size_t i;
   const size_t n_messages = 9, message_size = 16;
   char buf[BUFSIZ];
-  sukat_sock_endpoint_t client_endpoint;
+  sukat_sock_endpoint_t client_endpoint = { };
 
   default_endpoint_params.server = false;
   fd = socket_create(NULL, &default_endpoint_params, &client_endpoint);
@@ -1386,6 +1384,34 @@ TEST_F(sukat_sock_test_inet, sukat_sock_test_basic_client_server)
   sukat_sock_disconnect(ctx, client);
   err = sukat_sock_read(client_ctx, 100);
   EXPECT_EQ(0, err);
+
+    {
+      sukat_sock_endpoint_t *client_prebound_endpoint;
+      char ipstr[BUFSIZ];
+
+      default_endpoint_params.prebound = true;
+      default_endpoint_params.source.pinet.ip = "127.0.0.1";
+      default_endpoint_params.source.pinet.port = "0";
+
+      client_prebound_endpoint =
+        sukat_sock_endpoint_add(client_ctx, &default_endpoint_params);
+
+      std::string address(sukat_sock_endpoint_fd_to_str(
+        client_prebound_endpoint, ipstr, sizeof(ipstr)));
+
+      std::cout << address << std::endl << std::flush;
+      EXPECT_THAT(address, testing::HasSubstr("127.0.0.1"));
+
+      EXPECT_NE(nullptr, client_prebound_endpoint);
+
+      tctx.connect_visited = false;
+      tctx.should_disconnect = false;
+
+      err = sukat_sock_read(ctx, 0);
+      EXPECT_EQ(0, err);
+      EXPECT_EQ(true, tctx.connect_visited);
+      tctx.should_disconnect = true;
+    }
 
   sukat_sock_destroy(client_ctx);
   sukat_sock_disconnect(ctx, server_endpoint);

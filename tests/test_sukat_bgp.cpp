@@ -10,6 +10,7 @@ extern "C"{
 #include "sukat_log_internal.c"
 #include "sukat_bgp.c"
 #include "sukat_sock.h"
+#include "sukat_util.h"
 #include <stdlib.h>
 #include <stdint.h>
 }
@@ -224,7 +225,8 @@ TEST_F(sukat_bgp_test, sukat_bgp_test_init)
   EXPECT_NE(nullptr, peer2);
 
   snprintf(portbuf, sizeof(portbuf), "%hu", peer1_port);
-  peer1_from_peer2 = sukat_bgp_peer_add(peer2, &default_params.pinet);
+  peer1_from_peer2 =
+    sukat_bgp_peer_add(peer2, &default_params.pinet, NULL, NULL);
   EXPECT_NE(nullptr, peer1_from_peer2);
 
   // Received on the peer1 side
@@ -495,9 +497,104 @@ TEST_F(sukat_bgp_test, sukat_bgp_test_init)
       tctx.update_should = tctx.update_visited = false;
     }
 
+    {
+      sukat_bgp_peer_t *explicit_peer;
+      const struct sukat_sock_params_inet pinet =
+        {
+          .ip = "127.0.0.1"
+        };
+      const bgp_id_t id =
+        {
+          .as_num = 555,
+          .bgp_id = 12345,
+        };
+
+      explicit_peer =
+        sukat_bgp_peer_add(peer2, &default_params.pinet, &pinet, &id);
+      EXPECT_NE(nullptr, explicit_peer);
+
+      err = sukat_bgp_read(peer1, 100);
+      EXPECT_EQ(0, err);
+
+      tctx.open_visited = false;
+      tctx.match_as_num = peer1_as;
+      tctx.match_bgp_id = peer1_bgp;
+      tctx.open_should_visit = true;
+
+      err = sukat_bgp_read(peer2, 100);
+      EXPECT_EQ(0, err);
+
+      tctx.open_visited = false;
+      tctx.match_as_num = id.as_num;
+      tctx.match_bgp_id = id.bgp_id;
+      tctx.open_should_visit = true;
+
+      tctx.keepalive_should = true;
+      tctx.keepalive_visited = false;
+      err = sukat_bgp_read(peer1, 100);
+      EXPECT_EQ(true, tctx.open_visited);
+      EXPECT_EQ(true, tctx.keepalive_visited);
+      tctx.keepalive_visited = tctx.keepalive_should = tctx.open_should_visit =
+        tctx.open_visited = false;
+      sukat_bgp_disconnect(peer2, explicit_peer);
+    }
+
   sukat_bgp_disconnect(peer1, peer2_from_peer1);
   sukat_bgp_disconnect(peer2, peer1_from_peer2);
   sukat_bgp_destroy(peer2);
   sukat_bgp_destroy(peer1);
 }
 
+TEST(UtilTest, Ranges)
+{
+  struct sukat_util_range_values values = {};
+  bool bret;
+  char ipstr[INET6_ADDRSTRLEN];
+  uint32_t value4;
+  __int128 value16;
+
+  bret = sukat_util_range_to_integers("1-5", SUKAT_UTIL_RANGE_INPUT_INTEGER,
+                                      &values);
+  EXPECT_EQ(true, bret);
+  EXPECT_EQ(values.type, SUKAT_UTIL_RANGE_VALUE_4BYTE);
+  EXPECT_EQ(values.start4, 1);
+  EXPECT_EQ(values.end4, 5);
+  EXPECT_EQ(values.count4, 4);
+
+  memset(&values, 0, sizeof(values));
+  bret = sukat_util_range_to_integers("1-429496729500",
+                                      SUKAT_UTIL_RANGE_INPUT_INTEGER, &values);
+  EXPECT_EQ(true, bret);
+  EXPECT_EQ(values.type, SUKAT_UTIL_RANGE_VALUE_16BYTE);
+  EXPECT_EQ(values.start16, 1);
+  EXPECT_EQ(values.end16, 429496729500);
+  EXPECT_EQ(values.count16, 429496729500 - 1);
+
+  bret = sukat_util_range_to_integers("1.2.3.4-1.2.3.254",
+                                      SUKAT_UTIL_RANGE_INPUT_IP, &values);
+  EXPECT_EQ(true, bret);
+  EXPECT_EQ(values.type, SUKAT_UTIL_RANGE_VALUE_4BYTE);
+  snprintf(ipstr, sizeof(ipstr), "1.2.3.4");
+  int ret = inet_pton(AF_INET, ipstr, &value4);
+  EXPECT_EQ(1, ret);
+  EXPECT_EQ(values.start4, ntohl(value4));
+  snprintf(ipstr, sizeof(ipstr), "1.2.3.254");
+  ret = inet_pton(AF_INET, ipstr, &value4);
+  EXPECT_EQ(1, ret);
+  EXPECT_EQ(values.end4, ntohl(value4));
+  EXPECT_EQ(values.count4, 250);
+
+  bret = sukat_util_range_to_integers("ff01::1-ff01::ffff",
+                                      SUKAT_UTIL_RANGE_INPUT_IP, &values);
+  EXPECT_EQ(true, bret);
+  EXPECT_EQ(values.type, SUKAT_UTIL_RANGE_VALUE_16BYTE);
+  snprintf(ipstr, sizeof(ipstr), "ff01::1");
+  ret = inet_pton(AF_INET6, ipstr, &value16);
+  EXPECT_EQ(1, ret);
+  EXPECT_EQ(values.start16, sukat_util_ntohlll(value16));
+  snprintf(ipstr, sizeof(ipstr), "ff01::ffff");
+  ret = inet_pton(AF_INET6, ipstr, &value16);
+  EXPECT_EQ(1, ret);
+  EXPECT_EQ(values.end16, sukat_util_ntohlll(value16));
+  EXPECT_EQ(values.count16, UINT16_MAX - 1);
+}

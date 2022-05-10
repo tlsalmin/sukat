@@ -8,8 +8,7 @@
  *
  */
 
-#ifndef SUKAT_BGP_H
-#define SUKAT_BGP_H
+#pragma once
 
 #include <stdint.h>
 #include <endian.h>
@@ -296,12 +295,16 @@ enum sukat_sock_send_return sukat_bgp_send_keepalive(sukat_bgp_t *bgp_ctx,
  *
  * @param ctx   Main BGP context.
  * @param pinet End-point identifier for peer.
+ * @param source If set, an explicit source bound before connecting.
+ * @param explicit_id If set, an explicit BGP ID used for the peer.
  *
  * @return true         Success.
  * @return false        Failure.
  */
-sukat_bgp_peer_t *sukat_bgp_peer_add(sukat_bgp_t *ctx,
-                                     struct sukat_sock_params_inet *pinet);
+sukat_bgp_peer_t *sukat_bgp_peer_add(
+  sukat_bgp_t *ctx, const struct sukat_sock_params_inet *pinet,
+  const struct sukat_sock_params_inet *source,
+  const bgp_id_t *explicit_id);
 
 /*!
  * @brief Get the epoll context sukat_bgp is using
@@ -345,7 +348,5 @@ void sukat_bgp_free_attr_list(struct sukat_bgp_path_attr *attr_list);
  * @return NULL         Invalid argument
  */
 const bgp_id_t *sukat_bgp_get_bgp_id(sukat_bgp_peer_t *peer);
-
-#endif /* SUKAT_BGP_H */
 
 /*! @} */

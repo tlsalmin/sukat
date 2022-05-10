@@ -450,15 +450,6 @@ protected:
   tree_ctx_t *ctx;
 };
 
-static bool check_height(sukat_drawer_node_t *node,
-                         __attribute__((unused))void *caller_data)
-{
-  int balance = node_balance_get((tree_node_t *)node);
-  EXPECT_LE(-1, balance);
-  EXPECT_GE(1, balance);
-  return true;
-}
-
 TEST_F(sukat_tree_test_avl, sukat_tree_test_avl_insert_and_remove)
 {
   int values[] = {1, 6, 9, 8, 4, 12, 3, 22};

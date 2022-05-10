@@ -130,11 +130,11 @@ int sukat_event_read(sukat_event_ctx_t *ctx, int timeout)
 {
   if (ctx)
     {
-      const size_t n_events = (ctx->n_fds < 128) ? ctx->n_fds : 128;
-      struct epoll_event events[n_events];
+      const size_t max_events = (ctx->n_fds < 128) ? ctx->n_fds : 128;
+      struct epoll_event events[max_events];
       int ret;
 
-      ret = epoll_wait(ctx->epoll_fd, events, n_events, timeout);
+      ret = epoll_wait(ctx->epoll_fd, events, max_events, timeout);
       DBG(ctx, "Epoll returned %d", ret);
       if (ret > 0)
         {

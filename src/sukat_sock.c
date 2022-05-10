@@ -6,10 +6,6 @@
  * @{
  */
 
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
-
 #include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
@@ -201,31 +197,33 @@ static char *sock_log_saddr(struct sockaddr_storage *saddr, char *buf,
   info.storage = saddr;
   domain = info.storage->ss_family;
 
-  switch(domain)
+  switch (domain)
     {
-    case AF_UNIX:
-      SAFEPUT("%sUNIX %s", (info.sun->sun_path[0] == '\0') ? "Abstract " : "",
-              (info.sun->sun_path[0] == '\0') ? info.sun->sun_path + 1 :
-              info.sun->sun_path);
-      break;
-    case AF_TIPC:
-      SAFEPUT("TIPC port_type %u instance %u",
-              ntohl(info.stipc->addr.nameseq.type),
-              ntohl(info.stipc->addr.nameseq.lower));
-      break;
-    case AF_INET:
-    case AF_INET6:
-      SAFEPUT("IPv%d IP %s port %hu", (domain == AF_INET) ? 4 : 6,
-              inet_ntop(domain, (domain == AF_INET) ?
-                        (void *)&info.sin->sin_addr :
-                        (void *)&info.sin6->sin6_addr,
-                        inet_buf, sizeof(inet_buf)),
-              ntohs(info.sin->sin_port));
-      // I don't think AF_UNSPEC should be here anymore
-       break;
-    default:
-      SAFEPUT("Unknown family %d", domain);
-      break;
+      case AF_UNIX:
+        snprintf(buf, buf_len, "%sUNIX %s",
+                 (info.sun->sun_path[0] == '\0') ? "Abstract " : "",
+                 (info.sun->sun_path[0] == '\0') ? info.sun->sun_path + 1
+                                                 : info.sun->sun_path);
+        break;
+      case AF_TIPC:
+        snprintf(buf, buf_len, "TIPC port_type %u instance %u",
+                 ntohl(info.stipc->addr.nameseq.type),
+                 ntohl(info.stipc->addr.nameseq.lower));
+        break;
+      case AF_INET:
+      case AF_INET6:
+        snprintf(buf, buf_len, "IPv%d IP %s port %hu",
+                 (domain == AF_INET) ? 4 : 6,
+                 inet_ntop(domain,
+                           (domain == AF_INET) ? (void *)&info.sin->sin_addr
+                                               : (void *)&info.sin6->sin6_addr,
+                           inet_buf, sizeof(inet_buf)),
+                 ntohs(info.sin->sin_port));
+        // I don't think AF_UNSPEC should be here anymore
+        break;
+      default:
+        SAFEPUT("Unknown family %d", domain);
+        break;
     }
   return buf;
 }
@@ -256,6 +254,43 @@ char *sukat_sock_endpoint_to_str(sukat_sock_endpoint_t *endpoint, char *buf,
 }
 
 #undef SAFEPUT
+
+char *fd_to_str(int fd, char *buf, size_t buf_len)
+{
+  struct sockaddr_storage saddr;
+  socklen_t slen = sizeof(saddr);
+
+  if (!getsockname(fd, (struct sockaddr *)&saddr, &slen))
+    {
+      char src[255];
+
+      sock_log_saddr(&saddr, src, sizeof(src));
+      slen = sizeof(saddr);
+
+      memset(&saddr, 0, sizeof(saddr));
+      if (!getpeername(fd, (struct sockaddr *)&saddr, &slen))
+        {
+          char dst[255];
+          sock_log_saddr(&saddr, dst, sizeof(dst));
+          snprintf(buf, buf_len, "%s-%s", src, dst);
+        }
+      else
+        {
+          snprintf(buf, buf_len, "%s-unconnected", src);
+        }
+    }
+  else
+    {
+      snprintf(buf, buf_len, "%s", strerror(errno));
+    }
+  return buf;
+}
+
+char *sukat_sock_endpoint_fd_to_str(sukat_sock_endpoint_t *endpoint, char *buf,
+                                    size_t buf_len)
+{
+  return fd_to_str(endpoint->info.fd, buf, buf_len);
+}
 
 static void free_cache(struct rw_cache *cache)
 {
@@ -381,8 +416,69 @@ static bool socket_fill_unix(sukat_sock_t *ctx,
   return true;
 }
 
+static bool prebind(sukat_sock_t *ctx, int fd, int family,
+                    const struct sukat_sock_endpoint_params *params)
+{
+  struct sockaddr_storage saddr = { };
+  socklen_t slen = sizeof(saddr);
+
+  assert(fd != -1);
+  saddr.ss_family = family;
+
+  switch (family)
+    {
+      case AF_INET:
+      case AF_INET6:
+        if (inet_pton(family, params->source.pinet.ip,
+                      (family == AF_INET6
+                         ? (struct sockaddr *)&((struct sockaddr_in6 *)&saddr)
+                             ->sin6_addr
+                         : (struct sockaddr *)&((struct sockaddr_in *)&saddr)
+                             ->sin_addr)) != 1)
+          {
+            ERR(ctx, "Failed to convert %s to binary address of family %d: %m",
+                params->source.pinet.ip, family);
+            return false;
+          }
+        slen = (family == AF_INET ? sizeof(struct sockaddr_in)
+                                  : sizeof(struct sockaddr_in6));
+        break;
+      default:
+        LOG(ctx, "Unimplemented prebinding for family %d", family);
+        return true;
+        break;
+    }
+  if (!bind(fd, (struct sockaddr *)&saddr, slen))
+    {
+      slen = sizeof(saddr);
+
+      if (!getsockname(fd, (struct sockaddr *)&saddr, &slen))
+        {
+          char ipstr[INET6_ADDRSTRLEN];
+
+          LOG(ctx, "Prebound %d to %s(orig %s)", fd,
+              sock_log_saddr(&saddr, ipstr, sizeof(ipstr)),
+              params->source.pinet.ip);
+        }
+      else
+        {
+          ERR(ctx, "Failed to query %d bound address: %m", fd);
+        }
+      return true;
+    }
+  else
+    {
+      char ipstr[INET6_ADDRSTRLEN];
+
+      ERR(ctx, "Failed to bind fd %d to source %s: %m",
+          sock_log_saddr(&saddr, ipstr, sizeof(ipstr)));
+    }
+  return true;
+}
+
 static int socket_create_hinted(sukat_sock_t *ctx, struct addrinfo *p,
-                                sukat_sock_endpoint_t *endpoint, int backlog)
+                                sukat_sock_endpoint_t *endpoint,
+                                const struct sukat_sock_endpoint_params *params)
 {
   int fd = socket(p->ai_family, p->ai_socktype |
                   SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
@@ -411,9 +507,11 @@ static int socket_create_hinted(sukat_sock_t *ctx, struct addrinfo *p,
         }
       if (socket_connection_oriented(p->ai_socktype) == true)
         {
-          if (backlog == 0)
+          int backlog = SOMAXCONN;
+
+          if (params && params->listen)
             {
-              backlog = SOMAXCONN;
+              backlog = params->listen;
             }
           if (listen(fd, backlog) != 0)
             {
@@ -424,22 +522,36 @@ static int socket_create_hinted(sukat_sock_t *ctx, struct addrinfo *p,
     }
   else
     {
-      if (connect(fd, p->ai_addr, p->ai_addrlen) != 0)
+      if (!params || !params->prebound ||
+          prebind(ctx, fd, p->ai_family, params))
         {
-          if (errno == EINPROGRESS)
+          DBG_DEF(char ipstr[512]);
+
+          if (connect(fd, p->ai_addr, p->ai_addrlen) != 0)
             {
-              DBG(ctx, "Connect not completed with a single call");
-              endpoint->connect_in_progress = true;
+
+              if (errno == EINPROGRESS)
+                {
+                  DBG(ctx, "Connect not completed with a single call");
+                  endpoint->connect_in_progress = true;
+                }
+              else
+                {
+                  ERR(ctx, "Failed to connect to end-point: %s",
+                      strerror(errno));
+                  goto fail;
+                }
             }
           else
             {
-              ERR(ctx, "Failed to connect to end-point: %s", strerror(errno));
-              goto fail;
+              // Don't conn_cb just yet.
             }
+          DBG(ctx, "fd %d connection: %s", fd,
+              fd_to_str(fd, ipstr, sizeof(ipstr)));
         }
       else
         {
-          // Don't conn_cb just yet.
+          goto fail;
         }
     }
   return fd;
@@ -532,7 +644,7 @@ static int socket_create(sukat_sock_t *ctx,
 
   for (;p && main_fd == -1 ; p = p->ai_next)
     {
-      main_fd = socket_create_hinted(ctx, p, peer, params->listen);
+      main_fd = socket_create_hinted(ctx, p, peer, params);
       if (main_fd >= 0)
         {
           struct fd_info *info = &peer->info;
@@ -1556,7 +1668,7 @@ static bool sock_endpoint_to_client(sukat_sock_t *ctx,
   to_fill->info.type = client->info.type;
   memcpy(&to_fill->info.storage, &client->info.storage,
          client->info.slen);
-  to_fill->info.fd = socket_create_hinted(ctx, &info, to_fill, 0);
+  to_fill->info.fd = socket_create_hinted(ctx, &info, to_fill, NULL);
   if (to_fill->info.fd < 0)
     {
       char endpoint_str[256];
