@@ -12,7 +12,7 @@
 
 enum sukat_log_lvl
 {
-  SUKAT_LOG_ERROR,
+  SUKAT_LOG_ERROR = 0,
   SUKAT_LOG,
   SUKAT_LOG_DBG,
 };

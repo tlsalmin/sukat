@@ -501,12 +501,14 @@ TEST_F(sukat_bgp_test, sukat_bgp_test_init)
       sukat_bgp_peer_t *explicit_peer;
       const struct sukat_sock_params_inet pinet =
         {
-          .ip = "127.0.0.1"
+          .ip = "127.0.0.1",
+          .port = nullptr
         };
       const bgp_id_t id =
         {
           .as_num = 555,
           .bgp_id = 12345,
+          .version = 0
         };
 
       explicit_peer =

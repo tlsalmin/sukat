@@ -28,9 +28,10 @@ struct bgp_query_ctx
   const char *source; //!< Source IP for connection to peer.
   bool only_server;
   unsigned int n_connections;
+  sukat_bgp_peer_t **connections_array;
 };
 
-bool verbose = false;
+static int glb_lvl = SUKAT_LOG;
 
 static void usage(const char *binary, const struct option *opts,
                   const char **explanations)
@@ -46,34 +47,52 @@ static void usage(const char *binary, const struct option *opts,
 
 static void log_cb(enum sukat_log_lvl lvl, const char *msg)
 {
-  switch (lvl)
+  if ((int)lvl <= glb_lvl)
     {
-    case SUKAT_LOG_ERROR:
-      fprintf(stderr, "%s\n", msg);
-      break;
-    case SUKAT_LOG_DBG:
-      if (!verbose)
-        break;
-    case SUKAT_LOG:
-      fprintf(stdout, "%s\n", msg);
-      break;
-    default:
-      abort();
-      break;
+      switch (lvl)
+        {
+          case SUKAT_LOG_ERROR:
+            fprintf(stderr, "%s\n", msg);
+            break;
+          case SUKAT_LOG_DBG:
+            __attribute__((fallthrough));
+          case SUKAT_LOG:
+            fprintf(stdout, "%s\n", msg);
+            break;
+          default:
+            abort();
+            break;
+        }
     }
 }
 
-static void *open_cb(__attribute__((unused)) void *ctx,
+static void *open_cb(void *context,
                      sukat_bgp_peer_t *peer, sukat_sock_event_t event)
 {
+  struct bgp_query_ctx *ctx = context;
   char ipstr[INET6_ADDRSTRLEN];
   const bgp_id_t *id = sukat_bgp_get_bgp_id(peer);
-  uint32_t address = htonl(id->bgp_id);
+  uint32_t address = id->bgp_id;
 
   LOG("BGP peer AS: %hu BGP_ID %s event %s", id->as_num,
       inet_ntop(AF_INET, &address, ipstr, sizeof(ipstr)),
       (event == SUKAT_SOCK_CONN_EVENT_DISCONNECT) ? "Disconnected" :
       "Connected");
+  if (event == SUKAT_SOCK_CONN_EVENT_DISCONNECT)
+    {
+      unsigned int i;
+
+      for (i = 0; i < ctx->n_connections; i++)
+        {
+          if (ctx->connections_array[i] == peer)
+            {
+              ctx->connections_array[i] = NULL;
+              DBG("Removed peer %p from connections array index %u",
+                  peer, i);
+              break;
+            }
+        }
+    }
   return NULL;
 }
 
@@ -218,6 +237,7 @@ static bool parse_opts(struct bgp_query_ctx *ctx, int argc, char **argv)
         {"source", required_argument, NULL, 'S'},
         {"help", no_argument, NULL, 'h'},
         {"verbose", no_argument, NULL, 'v'},
+        {"quiet", no_argument, NULL, 'q'},
         {}
     };
   const char *explanations[] =
@@ -231,6 +251,7 @@ static bool parse_opts(struct bgp_query_ctx *ctx, int argc, char **argv)
       "Source IP address",
       "Print this help",
       "Increase verbosity",
+      "Increase silence",
     };
   _Static_assert(sizeof(explanations) / sizeof (*explanations) ==
                  sizeof(options) / sizeof(*options) - 1,
@@ -238,7 +259,7 @@ static bool parse_opts(struct bgp_query_ctx *ctx, int argc, char **argv)
   int c, what;
   optind = 1;
 
-  while ((c = getopt_long(argc, argv, "p:a:b:t:hsn:S:v", options, &what)) != -1)
+  while ((c = getopt_long(argc, argv, "p:a:b:t:hsn:S:vq", options, &what)) != -1)
     {
       switch (c)
         {
@@ -264,7 +285,10 @@ static bool parse_opts(struct bgp_query_ctx *ctx, int argc, char **argv)
           ctx->source = optarg;
           break;
         case 'v':
-          verbose = true;
+          glb_lvl++;
+          break;
+        case 'q':
+          glb_lvl--;
           break;
         case 'h':
         default:
@@ -405,80 +429,67 @@ static bool add_peers(sukat_bgp_t *bgp_ctx, const unsigned int n_peers,
 int main(int argc, char **argv)
 {
   int exit_val = EXIT_FAILURE;
-  struct bgp_query_ctx ctx =
-    {
-      .port = 179,
-      .target_port = 179,
-      .n_connections = 1
-    };
+  struct bgp_query_ctx query_ctx = {
+    .port = 179, .target_port = 179, .n_connections = 1};
 
-  if (parse_opts(&ctx, argc, argv) == true)
+  if (parse_opts(&query_ctx, argc, argv) == true)
     {
       char portbuf[strlen("65536") + 1];
-      struct bgp_query_ctx query_ctx = { };
       char *delimiter;
-      struct sukat_bgp_params params =
-        {
-          .pinet =
-            {
-              .ip = (ctx.only_server) ? ctx.target : NULL,
-              .port = portbuf
-            },
-          .caller_ctx = &query_ctx
-        };
-      struct sukat_bgp_cbs cbs =
-        {
-          .log_cb = log_cb,
-          .keepalive_cb = keepalive_cb,
-          .update_cb = update_cb,
-          .notification_cb = notification_cb,
-          .open_cb = open_cb
-        };
+      struct sukat_bgp_params params = {
+        .pinet = {.ip = (query_ctx.only_server) ? query_ctx.target : NULL,
+                  .port = portbuf},
+        .caller_ctx = &query_ctx};
+      struct sukat_bgp_cbs cbs = {.log_cb = log_cb,
+                                  .keepalive_cb = keepalive_cb,
+                                  .update_cb = update_cb,
+                                  .notification_cb = notification_cb,
+                                  .open_cb = open_cb};
       sukat_bgp_t *bgp_ctx;
 
-      if (ctx.bgp_id && !strchr(ctx.bgp_id, '-'))
+      if (query_ctx.bgp_id && !strchr(query_ctx.bgp_id, '-'))
         {
-          params.bgp_id_str = ctx.bgp_id;
+          params.bgp_id_str = query_ctx.bgp_id;
         }
-      else if (ctx.source && !strchr(ctx.source, '-'))
+      else if (query_ctx.source && !strchr(query_ctx.source, '-'))
         {
-          params.bgp_id_str = ctx.source;
+          params.bgp_id_str = query_ctx.source;
         }
       // else there must be a range of ids.
 
-      if ((delimiter = strchr(ctx.as_num, '-')))
+      if ((delimiter = strchr(query_ctx.as_num, '-')))
         {
-          char buf[BUFSIZ] = { };
+          char buf[BUFSIZ] = {};
 
           // use the first.
-          strncat(buf, ctx.as_num, delimiter - ctx.as_num - 1);
+          strncat(buf, query_ctx.as_num, delimiter - query_ctx.as_num - 1);
           params.id.as_num = safe_unsigned(buf, UINT32_MAX);
         }
       else
         {
-          params.id.as_num = safe_unsigned(ctx.as_num, UINT32_MAX);
+          params.id.as_num = safe_unsigned(query_ctx.as_num, UINT32_MAX);
         }
 
-      snprintf(portbuf, sizeof(portbuf), "%u", ctx.port);
+      snprintf(portbuf, sizeof(portbuf), "%u", query_ctx.port);
       bgp_ctx = sukat_bgp_create(&params, &cbs);
       if (bgp_ctx)
         {
           char target_port_buf[sizeof(portbuf)];
-          struct sukat_sock_params_inet peer_inet =
-            {
-              .ip = ctx.target,
-              .port = target_port_buf,
-            };
-          sukat_bgp_peer_t *peers[ctx.n_connections];
+          struct sukat_sock_params_inet peer_inet = {
+            .ip = query_ctx.target,
+            .port = target_port_buf,
+          };
+          query_ctx.connections_array =
+            calloc(query_ctx.n_connections, sizeof(struct sukat_bgp_peer_t *));
 
-          memset(peers, 0, sizeof(peers));
           query_ctx.bgp_ctx = bgp_ctx;
 
           snprintf(target_port_buf, sizeof(target_port_buf), "%u",
-                   ctx.target_port);
-          if (ctx.only_server ||
-              add_peers(bgp_ctx, ctx.n_connections, &peer_inet, peers,
-                        ctx.source, ctx.as_num))
+                   query_ctx.target_port);
+          if (query_ctx.only_server ||
+              add_peers(bgp_ctx, query_ctx.n_connections, &peer_inet,
+                        query_ctx.connections_array, query_ctx.source,
+                        query_ctx.as_num))
             {
               sigset_t sigs;
               int sigfd;
@@ -519,12 +530,10 @@ int main(int argc, char **argv)
               {
                 unsigned int i;
 
-                for (i = 0; i < ctx.n_connections; i++)
+                for (i = 0; i < query_ctx.n_connections; i++)
                   {
-                    if (peers[i])
-                      {
-                        sukat_bgp_disconnect(bgp_ctx, peers[i]);
-                      }
+                    sukat_bgp_disconnect(bgp_ctx,
+                                         query_ctx.connections_array[i]);
                   }
               }
             }

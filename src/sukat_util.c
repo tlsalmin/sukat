@@ -101,32 +101,47 @@ static void copy_ip_agnostic_to_variable(int family, uint32_t *target_ipv4,
     }
 }
 
-
-static bool range_integer(const char *range, struct sukat_util_range_values *values)
+static bool range_integer(const char *range,
+                          struct sukat_util_range_values *values)
 {
-      const char *delimiter = strchr(range, '-');
-      char buf[INET6_ADDRSTRLEN] = {};
-      long long val, val_end;;
+  const char *delimiter = strchr(range, '-');
+  char buf[INET6_ADDRSTRLEN] = {};
+  long long val, val_end;
+  ;
 
-      strncat(buf, range, delimiter ? delimiter - range : strlen(range));
-      val = atoll(buf);
+  strncat(buf, range, delimiter ? delimiter - range : strlen(range));
+  val = atoll(buf);
+  if (delimiter)
+    {
       val_end = atoll(delimiter + 1);
+    }
+  else
+    {
+      val_end = val;
+    }
 
-      if (val > UINT32_MAX || val_end > UINT32_MAX)
+  if (val > UINT32_MAX || val_end > UINT32_MAX)
+    {
+      values->start16 = val;
+      values->end16 = val_end;
+      values->count16 = val_end - val;
+      values->type = SUKAT_UTIL_RANGE_VALUE_16BYTE;
+    }
+  else
+    {
+      values->start4 = val;
+      values->end4 = val_end;
+      if (val_end == val)
         {
-          values->start16 = val;
-          values->end16 = val_end;
-          values->count16 = val_end - val;
-          values->type = SUKAT_UTIL_RANGE_VALUE_16BYTE;
+          values->count4 = 1;
         }
       else
         {
-          values->start4 = val;
-          values->end4 = val_end;
           values->count4 = val_end - val;
-          values->type = SUKAT_UTIL_RANGE_VALUE_4BYTE;
         }
-      return true;
+      values->type = SUKAT_UTIL_RANGE_VALUE_4BYTE;
+    }
+  return true;
 }
 
 static bool range_ip(const char *range, struct sukat_util_range_values *values)

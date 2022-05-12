@@ -358,6 +358,18 @@ uint16_t sukat_sock_get_port(sukat_sock_endpoint_t *endpoint);
 char *sukat_sock_endpoint_fd_to_str(sukat_sock_endpoint_t *endpoint,
                                     char *buf, size_t buf_len);
 
+#ifdef __cplusplus
+struct SukatSockDeleter
+{
+  void operator()(sukat_sock_t *ctx)
+    {
+      sukat_sock_destroy(ctx);
+    }
+};
+using sukat_sock_ptr = std::unique_ptr<sukat_sock_t,
+      SukatSockDeleter>;
+#endif
+
 #endif /* SUKAT_SOCK_H */
 
 /*! @} */

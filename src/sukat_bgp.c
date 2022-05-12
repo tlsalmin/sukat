@@ -130,6 +130,20 @@ struct bgp_as_path_network
   uint16_t as_numbers[];
 };
 
+struct bgp_open_capability
+{
+  uint8_t type;
+  uint8_t length;
+  uint8_t data[];
+};
+
+struct bgp_open_optional_parameter
+{
+  uint8_t type; // Usually just capability.
+  uint8_t length;
+  struct bgp_open_capability capability[];
+};
+
 /*!
  * The BGP open message as seen on the wire.
  */
@@ -140,7 +154,7 @@ struct bgp_open
   uint16_t hold_time;
   uint32_t bgp_id;
   uint8_t opt_param_len;
-  uint8_t opt_param[];
+  struct bgp_open_optional_parameter opt_param[];
 };
 
 /*!
@@ -212,6 +226,52 @@ static size_t bgp_msg_static_len(enum sukat_bgp_attr_type type,
   return ret;
 }
 
+static bool msg_options_are_sane(sukat_bgp_t *ctx, size_t options_len_left,
+                                 struct bgp_open_optional_parameter *first)
+{
+  struct bgp_open_optional_parameter *iter;
+  size_t total_open_len = 0;
+
+  DBG(ctx, "Parsing options of %zu bytes", options_len_left);
+  for (iter = first; options_len_left > 0;
+       iter =
+         (struct bgp_open_optional_parameter *)((void *)iter + total_open_len))
+    {
+      if (options_len_left < sizeof(*iter))
+        {
+          ERR(ctx, "No more bytes (%zu) left for full option struct(%zu)",
+              options_len_left, sizeof(*iter));
+        }
+      else if ((total_open_len = sizeof(*iter) + iter->length) >
+               options_len_left)
+        {
+          ERR(ctx,
+              "No more bytes (%zu) left for full options struct (%zu) and %hhu "
+              "length capability",
+              options_len_left, sizeof(*iter), iter->length);
+        }
+      else
+        {
+          struct bgp_open_capability *cap = iter->capability;
+
+          if (cap->length != (iter->length - sizeof(*cap)))
+            {
+              ERR(ctx,
+                  "Capability inside parameter %x of type %x has length %u "
+                  "when expected %zu",
+                  iter->type, cap->type, cap->length, iter->length);
+            }
+          else
+            {
+              options_len_left -= total_open_len;
+              continue;
+            }
+        }
+      return false;
+    }
+  return true;
+}
+
 static bool msg_is_sane(sukat_bgp_t *bgp_ctx, uint8_t *buf, size_t buf_len)
 {
   struct bgp_msg *msg = (struct bgp_msg *)buf;
@@ -236,7 +296,9 @@ static bool msg_is_sane(sukat_bgp_t *bgp_ctx, uint8_t *buf, size_t buf_len)
                       exam16 = ntohs(msg->msg.open.hold_time);
                       if (exam16 == 0 || exam16 >= 3)
                         {
-                          return true;
+                          return msg_options_are_sane(
+                            bgp_ctx, msg->msg.open.opt_param_len,
+                            msg->msg.open.opt_param);
                         }
                       ERR(bgp_ctx, "Invalid hold time %u", exam16);
                     }
@@ -668,13 +730,19 @@ static size_t msg_len_open(sukat_bgp_t *ctx)
 
 static bool msg_send_open(sukat_bgp_t *ctx, sukat_bgp_peer_t *peer)
 {
-  size_t msg_len = msg_len_open(ctx);
+  // Send the additional 32-bit AS-number.
+  const size_t additional_len =
+    sizeof(struct bgp_open_optional_parameter) +
+    sizeof(struct bgp_open_capability) + sizeof(uint32_t);
+  size_t msg_len = msg_len_open(ctx) + additional_len;
   uint8_t buf[msg_len];
   struct bgp_msg *msg = (struct bgp_msg *)buf;
   const bgp_id_t *id =
     (peer->own_explicit_id.as_num != 0 && peer->own_explicit_id.bgp_id != 0)
       ? &peer->own_explicit_id
       : &ctx->id;
+  struct bgp_open_optional_parameter *opt = msg->msg.open.opt_param;
+  struct bgp_open_capability *as_32bit = opt->capability;
 
   assert(ctx != NULL && peer != NULL);
 
@@ -682,7 +750,7 @@ static bool msg_send_open(sukat_bgp_t *ctx, sukat_bgp_peer_t *peer)
   msg_header_fill(msg, BGP_MSG_OPEN, msg_len);
   msg->hdr.type = BGP_MSG_OPEN;
 
-  memset(&msg->msg.open, 0, sizeof(msg->msg.open));
+  memset(&msg->msg.open, 0, sizeof(msg->msg.open) + additional_len);
 
   // Fill message.
   msg->msg.open.as_num = htons(id->as_num);
@@ -691,7 +759,18 @@ static bool msg_send_open(sukat_bgp_t *ctx, sukat_bgp_peer_t *peer)
   msg->msg.open.hold_time =
     !ctx->hold_time ? htons(180) : htons(ctx->hold_time);
   // Add optional parameters here when added.
-  msg->msg.open.opt_param_len = 0;
+  msg->msg.open.opt_param_len = additional_len;
+
+  opt->type = 2;
+  opt->length = additional_len - sizeof(*opt);
+  as_32bit->type = 65;
+  as_32bit->length = sizeof(uint32_t);
+    {
+      uint32_t as_num = id->as_num;
+
+      as_num = htonl(as_num);
+      memcpy(as_32bit->data, &as_num, sizeof(as_num));
+    }
 
   if (sukat_send_msg(ctx->sock_ctx, peer->sock_peer,
                      buf, msg_len, NULL) == SUKAT_SEND_OK)

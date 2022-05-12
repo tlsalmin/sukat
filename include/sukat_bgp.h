@@ -199,6 +199,16 @@ struct sukat_bgp_update
 typedef void (*sukat_bgp_update_cb)(void *ctx, sukat_bgp_peer_t *peer,
                                     struct sukat_bgp_update *update);
 
+/**
+ * @brief Called on client connected, disconnected or accepted.
+ *
+ * @param ctx Context
+ * @param peer Peer.
+ * @param event Event received
+ */
+typedef void (*sukat_bgp_new_conn_cb)(void *ctx, sukat_bgp_peer_t *peer,
+                                      enum sukat_sock_new_conn_event event);
+
 /*!
  * Parameters for a BGP context.
  */
